@@ -1,0 +1,38 @@
+# Built application
+build/
+*.apk
+*.aab
+*.ipa
+
+# Flutter/Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+
+# Android
+android/.gradle/
+android/app/build/
+android/.idea/
+android/local.properties
+
+# iOS
+ios/Pods/
+ios/.symlinks/
+ios/build/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local config (credentials - DO NOT commit)
+*.local
+.env
