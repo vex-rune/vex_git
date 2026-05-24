@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../application/providers/git_providers.dart';
 import '../../domain/entities/entities.dart';
+import '../widgets/file_tree_widget.dart';
 
 class RepoDetailScreen extends ConsumerStatefulWidget {
   final String repoId;
@@ -103,7 +104,7 @@ class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
         bottom: TabBar(
           controller: _tabController,
           tabs: const [
-            Tab(text: '变更'),
+            Tab(text: '文件'),
             Tab(text: '提交'),
             Tab(text: '分支'),
           ],
@@ -145,7 +146,7 @@ class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
             child: TabBarView(
               controller: _tabController,
               children: [
-                _buildStatusTab(status),
+                _buildFilesTab(repo),
                 _buildLogTab(repo, log),
                 _buildBranchTab(repo, branches),
               ],
@@ -170,27 +171,12 @@ class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
     );
   }
 
-  Widget _buildStatusTab(AsyncValue<List<FileChange>> status) {
-    return status.when(
-      data: (changes) {
-        if (changes.isEmpty) {
-          return const Center(child: Text('工作区干净，无变更', style: TextStyle(color: Colors.grey)));
-        }
-        return ListView.builder(
-          itemCount: changes.length,
-          itemBuilder: (_, i) {
-            final c = changes[i];
-            return ListTile(
-              leading: Icon(_iconForStatus(c.status), color: _colorForStatus(c.status)),
-              title: Text(c.path),
-              subtitle: Text(c.status.name, style: TextStyle(color: _colorForStatus(c.status), fontSize: 11)),
-              dense: true,
-            );
-          },
-        );
+  Widget _buildFilesTab(Repository repo) {
+    return FileTreeWidget(
+      repo: repo,
+      onFileTap: (path) {
+        context.push('/repo/${repo.id}/file?path=${Uri.encodeComponent(path)}');
       },
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (e, _) => Center(child: Text('加载失败: $e')),
     );
   }
 
