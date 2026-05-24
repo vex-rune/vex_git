@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import '../../application/providers/git_providers.dart';
 import '../../domain/entities/entities.dart';
 
@@ -85,6 +86,15 @@ class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
         title: Text(repo.name),
         actions: [
           IconButton(
+            icon: const Icon(Icons.folder_open),
+            onPressed: () {
+              if (repo != null) {
+                context.push('/repo/${repo.id}/file?path=');
+              }
+            },
+            tooltip: '浏览文件',
+          ),
+          IconButton(
             icon: const Icon(Icons.call_merge),
             onPressed: () {},
             tooltip: '合并',
@@ -136,7 +146,7 @@ class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
               controller: _tabController,
               children: [
                 _buildStatusTab(status),
-                _buildLogTab(log),
+                _buildLogTab(repo, log),
                 _buildBranchTab(repo, branches),
               ],
             ),
@@ -184,7 +194,7 @@ class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
     );
   }
 
-  Widget _buildLogTab(AsyncValue<List<GitCommit>> log) {
+  Widget _buildLogTab(Repository repo, AsyncValue<List<GitCommit>> log) {
     return log.when(
       data: (commits) => ListView.builder(
         itemCount: commits.length,
@@ -199,6 +209,7 @@ class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
             title: Text(c.message, maxLines: 1, overflow: TextOverflow.ellipsis),
             subtitle: Text('${c.shortSha} · ${c.author} · ${_formatTime(c.timestamp)}'),
             dense: true,
+            onTap: () => context.push('/repo/${repo.id}/commit/${c.shortSha}'),
           );
         },
       ),

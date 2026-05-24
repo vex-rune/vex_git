@@ -5,6 +5,8 @@ import 'presentation/screens/home_screen.dart';
 import 'presentation/screens/clone_screen.dart';
 import 'presentation/screens/repo_detail_screen.dart';
 import 'presentation/screens/commit_screen.dart';
+import 'presentation/screens/commit_detail_screen.dart';
+import 'presentation/screens/file_viewer_screen.dart';
 import 'presentation/screens/branch_screen.dart';
 import 'presentation/screens/settings_screen.dart';
 
@@ -24,6 +26,24 @@ final router = GoRouter(
       builder: (_, state) => CommitScreen(
         repoId: state.pathParameters['id']!,
       ),
+    ),
+    GoRoute(
+      path: '/repo/:id/commit/:sha',
+      builder: (_, state) => CommitDetailScreen(
+        repoId: state.pathParameters['id']!,
+        sha: state.pathParameters['sha']!,
+      ),
+    ),
+    GoRoute(
+      path: '/repo/:id/file',
+      builder: (_, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        return FileViewerScreen(
+          repoId: state.pathParameters['id']!,
+          filePath: state.uri.queryParameters['path'] ?? '',
+          isDir: extra?['isDir'] ?? false,
+        );
+      },
     ),
     GoRoute(
       path: '/repo/:id/branch',
