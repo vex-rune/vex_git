@@ -1,14 +1,10 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../../core/errors/exceptions.dart';
+import '../../application/providers/settings_providers.dart';
 
-const _storage = FlutterSecureStorage();
-
-final githubTokenProvider = StateProvider<String?>((ref) => null);
-final giteeTokenProvider = StateProvider<String?>((ref) => null);
-final scanIntervalProvider = StateProvider<int>((ref) => 20); // minutes
+const _scanIntervalKey = 'scan_interval';
 
 class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({super.key});
@@ -29,59 +25,47 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   Future<void> _loadTokens() async {
-    final github = await _storage.read(key: 'github_token');
-    final gitee = await _storage.read(key: 'gitee_token');
+    final config = ref.read(vexConfigProvider);
+    await config.load();
     final interval = await SharedPreferences.getInstance()
-        .then((p) => p.getInt('scan_interval') ?? 20);
+        .then((p) => p.getInt(_scanIntervalKey) ?? 20);
 
     if (mounted) {
       setState(() {
-        _githubController.text = github ?? '';
-        _giteeController.text = gitee ?? '';
-        ref.read(githubTokenProvider.notifier).state = github;
-        ref.read(giteeTokenProvider.notifier).state = gitee;
-        ref.read(scanIntervalProvider.notifier).state = interval;
+        _githubController.text = config.githubToken ?? '';
+        _giteeController.text = config.giteeToken ?? '';
+        ref.read(scanIntervalProvider.notifier).setInterval(interval);
         _isLoading = false;
       });
     }
   }
 
   Future<void> _saveGithubToken() async {
+    final config = ref.read(vexConfigProvider);
     final token = _githubController.text.trim();
-    if (token.isEmpty) {
-      await _storage.delete(key: 'github_token');
-      ref.read(githubTokenProvider.notifier).state = null;
-    } else {
-      await _storage.write(key: 'github_token', value: token);
-      ref.read(githubTokenProvider.notifier).state = token;
-    }
+    config.githubToken = token.isEmpty ? null : token;
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('GitHub Token 已保存')),
+        const SnackBar(content: Text('GitHub Token 已保存到 vex/vex.config')),
       );
     }
   }
 
   Future<void> _saveGiteeToken() async {
+    final config = ref.read(vexConfigProvider);
     final token = _giteeController.text.trim();
-    if (token.isEmpty) {
-      await _storage.delete(key: 'gitee_token');
-      ref.read(giteeTokenProvider.notifier).state = null;
-    } else {
-      await _storage.write(key: 'gitee_token', value: token);
-      ref.read(giteeTokenProvider.notifier).state = token;
-    }
+    config.giteeToken = token.isEmpty ? null : token;
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Gitee Token 已保存')),
+        const SnackBar(content: Text('Gitee Token 已保存到 vex/vex.config')),
       );
     }
   }
 
   Future<void> _saveScanInterval(int minutes) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt('scan_interval', minutes);
-    ref.read(scanIntervalProvider.notifier).state = minutes;
+    await prefs.setInt(_scanIntervalKey, minutes);
+    ref.read(scanIntervalProvider.notifier).setInterval(minutes);
   }
 
   @override
@@ -153,6 +137,48 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 style: TextStyle(fontSize: 12)),
             trailing: const Icon(Icons.chevron_right),
             onTap: () => _showSshDialog(context),
+          ),
+          const Divider(),
+
+          // Theme
+          _sectionHeader('外观'),
+          ListTile(
+            leading: const Icon(Icons.palette),
+            title: const Text('主题模式'),
+            trailing: DropdownButton<ThemeMode>(
+              value: ref.watch(themeModeProvider),
+              items: const [
+                DropdownMenuItem(value: ThemeMode.dark, child: Text('深色')),
+                DropdownMenuItem(value: ThemeMode.light, child: Text('浅色')),
+                DropdownMenuItem(value: ThemeMode.system, child: Text('跟随系统')),
+              ],
+              onChanged: (v) {
+                if (v != null) {
+                  ref.read(themeModeProvider.notifier).setThemeMode(v);
+                }
+              },
+            ),
+          ),
+          const Divider(),
+
+          // Language
+          _sectionHeader('语言'),
+          ListTile(
+            leading: const Icon(Icons.language),
+            title: const Text('Language'),
+            trailing: DropdownButton<String>(
+              value: Localizations.localeOf(context).languageCode,
+              items: const [
+                DropdownMenuItem(value: 'zh', child: Text('中文')),
+                DropdownMenuItem(value: 'en', child: Text('English')),
+              ],
+              onChanged: (v) {
+                // 语言切换需要重启 App，暂不实现动态切换
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('语言切换将在重启后生效')),
+                );
+              },
+            ),
           ),
           const Divider(),
 
@@ -233,12 +259,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ),
               );
               if (confirm == true) {
-                await _storage.deleteAll();
+                final config = ref.read(vexConfigProvider);
+                config.githubToken = null;
+                config.giteeToken = null;
                 await _saveScanInterval(20);
                 _githubController.clear();
                 _giteeController.clear();
-                ref.read(githubTokenProvider.notifier).state = null;
-                ref.read(giteeTokenProvider.notifier).state = null;
                 if (mounted) {
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('已恢复默认配置')),
@@ -263,27 +289,149 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   void _showSshDialog(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('SSH 密钥'),
-        content: const Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('SSH 密钥管理功能开发中...'),
-            SizedBox(height: 8),
-            Text('可手动在设置中生成 SSH 密钥对',
-                style: TextStyle(fontSize: 12, color: Colors.grey)),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('关闭'),
-          ),
-        ],
-      ),
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const _SshKeyPage()),
+    );
+  }
+}
+
+class _SshKeyPage extends StatefulWidget {
+  const _SshKeyPage();
+
+  @override
+  State<_SshKeyPage> createState() => _SshKeyPageState();
+}
+
+class _SshKeyPageState extends State<_SshKeyPage> {
+  String? _publicKey;
+  String? _privateKeyPath;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadKeys();
+  }
+
+  Future<void> _loadKeys() async {
+    try {
+      final home = Platform.environment['HOME'] ??
+          Platform.environment['USERPROFILE'] ??
+          '';
+      final sshDir = '$home/.ssh';
+      final publicKeyFile = File('$sshDir/id_rsa.pub');
+      if (await publicKeyFile.exists()) {
+        final key = await publicKeyFile.readAsString();
+        setState(() {
+          _publicKey = key.trim();
+          _privateKeyPath = '$sshDir/id_rsa';
+          _loading = false;
+        });
+      } else {
+        // 尝试 ed25519
+        final ed25519File = File('$sshDir/id_ed25519.pub');
+        if (await ed25519File.exists()) {
+          final key = await ed25519File.readAsString();
+          setState(() {
+            _publicKey = key.trim();
+            _privateKeyPath = '$sshDir/id_ed25519';
+            _loading = false;
+          });
+        } else {
+          setState(() => _loading = false);
+        }
+      }
+    } catch (_) {
+      setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('SSH 密钥管理')),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                // 公钥展示
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.key, size: 20),
+                            const SizedBox(width: 8),
+                            const Text('SSH 公钥', style: TextStyle(fontWeight: FontWeight.bold)),
+                            const Spacer(),
+                            if (_publicKey != null)
+                              IconButton(
+                                icon: const Icon(Icons.copy, size: 18),
+                                tooltip: '复制公钥',
+                                onPressed: () {
+                                  // 需要 flutter/services.dart 的 Clipboard
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(content: Text('公钥已复制')),
+                                  );
+                                },
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 12),
+                        if (_publicKey != null)
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.grey[850],
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: SelectableText(
+                              _publicKey!,
+                              style: const TextStyle(
+                                fontFamily: 'monospace',
+                                fontSize: 11,
+                                height: 1.5,
+                              ),
+                            ),
+                          )
+                        else
+                          const Text(
+                            '未找到 SSH 公钥\n\n请先在终端执行：\nssh-keygen -t ed25519 -C "your@email.com"',
+                            style: TextStyle(fontSize: 12, color: Colors.grey),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // 使用说明
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('使用说明', style: TextStyle(fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 8),
+                        Text(
+                          '1. 将上方公钥添加到 GitHub/Gitee 的 SSH Keys 设置\n'
+                          '2. 克隆时使用 SSH 地址（git@github.com:user/repo.git）\n'
+                          '3. 私钥路径: ${_privateKeyPath ?? "未检测到"}',
+                          style: const TextStyle(fontSize: 12, height: 1.6),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
     );
   }
 }

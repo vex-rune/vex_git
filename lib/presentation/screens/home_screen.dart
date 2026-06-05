@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../application/providers/git_providers.dart';
 import '../../domain/entities/entities.dart';
-import '../../infrastructure/git/git_on_dart_impl.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 
@@ -69,6 +68,7 @@ class HomeScreen extends ConsumerWidget {
                       ref.read(currentRepoProvider.notifier).state = repo;
                       context.push('/repo/${repo.id}');
                     },
+                    onLongPress: () => _showRepoOptions(context, ref, repo),
                   );
                 },
               ),
@@ -177,6 +177,104 @@ class HomeScreen extends ConsumerWidget {
     );
   }
 
+  void _showRepoOptions(BuildContext context, WidgetRef ref, Repository repo) {
+    showModalBottomSheet(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.edit),
+              title: const Text('重命名'),
+              onTap: () {
+                Navigator.pop(context);
+                _renameRepo(context, ref, repo);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete, color: Colors.red),
+              title: const Text('移除仓库', style: TextStyle(color: Colors.red)),
+              onTap: () async {
+                Navigator.pop(context);
+                final confirm = await showDialog<bool>(
+                  context: context,
+                  builder: (_) => AlertDialog(
+                    title: const Text('确认移除'),
+                    content: Text('确定从列表中移除「${repo.name}」？\n本地文件不会被删除。'),
+                    actions: [
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('取消'),
+                      ),
+                      TextButton(
+                        onPressed: () => Navigator.pop(context, true),
+                        child: const Text('移除', style: TextStyle(color: Colors.red)),
+                      ),
+                    ],
+                  ),
+                );
+                if (confirm == true) {
+                  ref.read(repositoriesProvider.notifier).removeRepo(repo.id);
+                  if (ref.read(currentRepoProvider)?.id == repo.id) {
+                    ref.read(currentRepoProvider.notifier).state = null;
+                  }
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _renameRepo(BuildContext context, WidgetRef ref, Repository repo) {
+    final controller = TextEditingController(text: repo.name);
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('重命名仓库'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(
+            labelText: '仓库名',
+            border: OutlineInputBorder(),
+          ),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () {
+              final name = controller.text.trim();
+              if (name.isNotEmpty) {
+                ref.read(repositoriesProvider.notifier).renameRepo(repo.id, name);
+                if (ref.read(currentRepoProvider)?.id == repo.id) {
+                  final updated = Repository(
+                    id: repo.id,
+                    name: name,
+                    description: repo.description,
+                    localPath: repo.localPath,
+                    remoteUrl: repo.remoteUrl,
+                    platform: repo.platform,
+                    defaultBranch: repo.defaultBranch,
+                    createdAt: repo.createdAt,
+                  );
+                  ref.read(currentRepoProvider.notifier).state = updated;
+                }
+              }
+              Navigator.pop(context);
+            },
+            child: const Text('确认'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _drawerSection(String title, List<Widget> children) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -278,8 +376,7 @@ class HomeScreen extends ConsumerWidget {
       createdAt: DateTime.now(),
     );
 
-    final repos = ref.read(repositoriesProvider).valueOrNull ?? [];
-    ref.read(repositoriesProvider.notifier).state = AsyncValue.data([...repos, repo]);
+    ref.read(repositoriesProvider.notifier).addRepo(repo);
     ref.read(currentRepoProvider.notifier).state = repo;
 
     if (context.mounted) {
@@ -325,7 +422,7 @@ class HomeScreen extends ConsumerWidget {
             child: const Text('取消'),
           ),
           TextButton(
-            onPressed: () => Navigator.pop(context, null),
+            onPressed: () => Navigator.pop(context, nameController.text.trim()),
             child: const Text('创建'),
           ),
         ],
@@ -348,8 +445,7 @@ class HomeScreen extends ConsumerWidget {
           createdAt: DateTime.now(),
         );
 
-        final repos = ref.read(repositoriesProvider).valueOrNull ?? [];
-        ref.read(repositoriesProvider.notifier).state = AsyncValue.data([...repos, repo]);
+        ref.read(repositoriesProvider.notifier).addRepo(repo);
         ref.read(currentRepoProvider.notifier).state = repo;
 
         if (context.mounted) {
@@ -398,7 +494,7 @@ class _ChangeBadge extends ConsumerWidget {
         );
       },
       loading: () => const SizedBox.shrink(),
-      error: (_, __) => const SizedBox.shrink(),
+      error: (_, _) => const SizedBox.shrink(),
     );
   }
 }

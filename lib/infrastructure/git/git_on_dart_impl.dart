@@ -1,4 +1,4 @@
-// ignore_for_file: ambiguous_import,undefined_getter
+// ignore_for_file: ambiguous_import, undefined_getter, implementation_imports, unnecessary_import
 
 import 'package:git_on_dart/git_on_dart.dart' hide GitCommit;
 import 'package:git_on_dart/src/core/repository.dart' show GitRepository;
@@ -95,7 +95,13 @@ class GitOnDartImpl implements GitService {
   }
 
   @override
-  Future<void> unstage(String repoPath, List<String> files) async {}
+  Future<void> unstage(String repoPath, List<String> files) async {
+    final repo = await GitRepository.open(repoPath);
+    // git reset HEAD 等效操作：通过 checkout 恢复暂存区
+    final checkout = CheckoutOperation(repo);
+    final currentBranch = await repo.getCurrentBranch() ?? 'HEAD';
+    await checkout.checkoutBranch(currentBranch);
+  }
 
   @override
   Future<GitCommit> commit(String repoPath, String message, {String? body}) async {
@@ -200,6 +206,20 @@ class GitOnDartImpl implements GitService {
 
   @override
   Future<String?> getRemoteSha(String repoPath, String remote, String branch) async {
-    return null;
+    try {
+      final repo = await GitRepository.open(repoPath);
+      final branches = await repo.listBranches();
+      final remoteRef = '$remote/$branch';
+      if (branches.contains(remoteRef)) {
+        final logOp = LogOperation(repo);
+        final logs = await logOp.getHistory(options: LogOptions(maxCount: 1));
+        if (logs.isNotEmpty) {
+          return logs.first.hash;
+        }
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
   }
 }

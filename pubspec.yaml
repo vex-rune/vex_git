@@ -9,6 +9,8 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_localizations:
+    sdk: flutter
   cupertino_icons: ^1.0.8
 
   # Git operations - pure Dart implementation
@@ -25,16 +27,12 @@ dependencies:
   path_provider: ^2.1.5
   path: ^1.9.0
   url_launcher: ^6.3.1
-  flutter_secure_storage: ^9.2.4
   shared_preferences: ^2.5.3
   equatable: ^2.0.7
   intl: ^0.20.2
-  flutter_highlight: ^0.7.0
 
   # Error handling & logging
   talker: ^4.1.2
-  riverpod_generator: ^2.6.4
-  build_runner: ^2.4.15
 
 dev_dependencies:
   flutter_test:

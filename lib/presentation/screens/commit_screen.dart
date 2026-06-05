@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -167,24 +168,27 @@ class _CommitScreenState extends ConsumerState<CommitScreen> {
                   itemBuilder: (_, i) {
                     final c = changes[i];
                     final selected = _selectedFiles.contains(c.path);
-                    return CheckboxListTile(
-                      value: selected,
-                      onChanged: (v) {
-                        setState(() {
-                          if (v == true) {
-                            _selectedFiles.add(c.path);
-                          } else {
-                            _selectedFiles.remove(c.path);
-                          }
-                        });
-                      },
+                    return ListTile(
+                      leading: Checkbox(
+                        value: selected,
+                        onChanged: (v) {
+                          setState(() {
+                            if (v == true) {
+                              _selectedFiles.add(c.path);
+                            } else {
+                              _selectedFiles.remove(c.path);
+                            }
+                          });
+                        },
+                      ),
                       title: Text(c.path),
                       subtitle: Text(c.status.name, style: TextStyle(
                         color: _colorForStatus(c.status),
                         fontSize: 11,
                       )),
-                      secondary: Icon(_iconForStatus(c.status), color: _colorForStatus(c.status)),
+                      trailing: Icon(_iconForStatus(c.status), color: _colorForStatus(c.status)),
                       dense: true,
+                      onTap: () => _showFilePreview(c),
                     );
                   },
                 );
@@ -196,6 +200,110 @@ class _CommitScreenState extends ConsumerState<CommitScreen> {
         ],
       ),
     );
+  }
+
+  void _showFilePreview(FileChange change) {
+    final repo = ref.read(currentRepoProvider);
+    if (repo == null) return;
+
+    final file = File('${repo.localPath}/${change.path}');
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => DraggableScrollableSheet(
+        initialChildSize: 0.6,
+        minChildSize: 0.3,
+        maxChildSize: 0.9,
+        expand: false,
+        builder: (_, controller) => Column(
+          children: [
+            // 顶部标题栏
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              child: Row(
+                children: [
+                  Icon(_iconForStatus(change.status), color: _colorForStatus(change.status), size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      change.path,
+                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                    ),
+                  ),
+                  Text(change.status.name, style: TextStyle(fontSize: 11, color: _colorForStatus(change.status))),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            // 文件内容
+            Expanded(
+              child: FutureBuilder<String>(
+                future: _readFile(file),
+                builder: (_, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+                  final content = snapshot.data ?? '(无法读取)';
+                  final lines = content.split('\n');
+                  return ListView.builder(
+                    controller: controller,
+                    itemCount: lines.length,
+                    itemBuilder: (_, i) {
+                      final line = lines[i];
+                      final isConflict = line.startsWith('<<<<<<<') ||
+                          line.startsWith('=======') ||
+                          line.startsWith('>>>>>>>');
+                      return Container(
+                        color: isConflict
+                            ? Colors.orange[900]?.withValues(alpha: 0.3)
+                            : null,
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SizedBox(
+                              width: 40,
+                              child: Text(
+                                '${i + 1}',
+                                style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                                textAlign: TextAlign.right,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                line,
+                                style: TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontSize: 12,
+                                  height: 1.5,
+                                  color: isConflict ? Colors.orange : null,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Future<String> _readFile(File file) async {
+    try {
+      if (await file.exists()) {
+        return await file.readAsString();
+      }
+      return '(文件不存在)';
+    } catch (e) {
+      return '(读取失败: $e)';
+    }
   }
 
   IconData _iconForStatus(ChangeStatus s) {

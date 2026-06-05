@@ -33,9 +33,47 @@ class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
   Future<void> _pull() async {
     final repo = ref.read(currentRepoProvider);
     if (repo == null) return;
+
+    // 检查是否有未提交的改动
+    final git = ref.read(gitServiceProvider);
+    final changes = await git.getStatus(repo.localPath);
+    if (changes.isNotEmpty) {
+      if (!mounted) return;
+      final action = await showDialog<String>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('存在未提交的改动'),
+          content: Text('当前有 ${changes.length} 个文件未提交，拉取可能导致冲突。\n\n建议先提交或暂存改动。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, 'cancel'),
+              child: const Text('取消'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, 'stash'),
+              child: const Text('暂存修改'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, 'force'),
+              child: const Text('强制拉取', style: TextStyle(color: Colors.orange)),
+            ),
+          ],
+        ),
+      );
+      if (action == 'cancel' || action == null) return;
+      // stash 暂存：stage 所有文件后 checkout
+      if (action == 'stash') {
+        try {
+          await git.stage(repo.localPath, changes.map((c) => c.path).toList());
+        } catch (e) {
+          _showError(e);
+          return;
+        }
+      }
+    }
+
     ref.read(syncStatusProvider.notifier).state = SyncStatus.syncing;
     try {
-      final git = ref.read(gitServiceProvider);
       await git.pull(repo.localPath);
       ref.read(syncStatusProvider.notifier).state = SyncStatus.success;
       ref.invalidate(statusProvider(repo.localPath));
@@ -52,6 +90,38 @@ class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
     ref.read(syncStatusProvider.notifier).state = SyncStatus.syncing;
     try {
       final git = ref.read(gitServiceProvider);
+
+      // 检查远程是否有新提交
+      final currentBranch = await git.getCurrentBranch(repo.localPath);
+      final remoteSha = await git.getRemoteSha(repo.localPath, 'origin', currentBranch);
+      if (remoteSha != null) {
+        final log = await git.getLog(repo.localPath, limit: 1);
+        final localSha = log.isNotEmpty ? log.first.sha : null;
+        if (localSha != remoteSha) {
+          if (!mounted) return;
+          ref.read(syncStatusProvider.notifier).state = SyncStatus.idle;
+          final proceed = await showDialog<bool>(
+            context: context,
+            builder: (_) => AlertDialog(
+              title: const Text('远程有新提交'),
+              content: const Text('远程分支存在新的提交，直接推送可能被拒绝。\n\n建议先拉取合并后再推送。'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text('取消'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text('继续推送'),
+                ),
+              ],
+            ),
+          );
+          if (proceed != true) return;
+          ref.read(syncStatusProvider.notifier).state = SyncStatus.syncing;
+        }
+      }
+
       await git.push(repo.localPath);
       ref.read(syncStatusProvider.notifier).state = SyncStatus.success;
     } catch (e) {
@@ -64,6 +134,67 @@ class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('操作失败: $e')),
     );
+  }
+
+  void _showMergeDialog(Repository repo, AsyncValue<List<GitBranch>> branches) {
+    branches.whenData((list) {
+      final currentBranch = list.firstWhere(
+        (b) => b.isCurrent,
+        orElse: () => const GitBranch(name: 'main', type: BranchType.local),
+      );
+      final mergeable = list.where(
+        (b) => !b.isCurrent && b.type == BranchType.local,
+      ).toList();
+
+      if (mergeable.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('没有可合并的分支')),
+        );
+        return;
+      }
+
+      showDialog(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('合并分支'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('将以下分支合并到 ${currentBranch.name}：'),
+              const SizedBox(height: 12),
+              ...mergeable.map((b) => ListTile(
+                    leading: const Icon(Icons.call_split, size: 20),
+                    title: Text(b.name),
+                    dense: true,
+                    onTap: () async {
+                      Navigator.pop(context);
+                      try {
+                        final git = ref.read(gitServiceProvider);
+                        await git.merge(repo.localPath, b.name);
+                        ref.invalidate(statusProvider(repo.localPath));
+                        ref.invalidate(logProvider(repo.localPath));
+                        if (mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('已合并 ${b.name}')),
+                          );
+                        }
+                      } catch (e) {
+                        _showError(e);
+                      }
+                    },
+                  )),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+          ],
+        ),
+      );
+    });
   }
 
   @override
@@ -79,7 +210,6 @@ class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
     }
 
     final branches = ref.watch(branchesProvider(repo.localPath));
-    final status = ref.watch(statusProvider(repo.localPath));
     final log = ref.watch(logProvider(repo.localPath));
 
     return Scaffold(
@@ -89,16 +219,19 @@ class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
           IconButton(
             icon: const Icon(Icons.folder_open),
             onPressed: () {
-              if (repo != null) {
-                context.push('/repo/${repo.id}/file?path=');
-              }
+              context.push('/repo/${repo.id}/file?path=');
             },
             tooltip: '浏览文件',
           ),
           IconButton(
             icon: const Icon(Icons.call_merge),
-            onPressed: () {},
+            onPressed: () => _showMergeDialog(repo, branches),
             tooltip: '合并',
+          ),
+          IconButton(
+            icon: const Icon(Icons.bar_chart),
+            onPressed: () => context.push('/repo/${repo.id}/stats'),
+            tooltip: '统计',
           ),
         ],
         bottom: TabBar(
@@ -208,7 +341,7 @@ class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
         label: const Text('...', style: TextStyle(fontSize: 12)),
         backgroundColor: const Color(0xFF37474F),
       ),
-      error: (_, __) => Chip(
+      error: (_, _) => Chip(
         avatar: const Icon(Icons.error, size: 16),
         label: const Text('错误', style: TextStyle(fontSize: 12)),
         backgroundColor: Colors.red[800],
@@ -280,36 +413,6 @@ class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
       loading: () => const Center(child: CircularProgressIndicator()),
       error: (e, _) => Center(child: Text('加载失败: $e')),
     );
-  }
-
-  IconData _iconForStatus(ChangeStatus s) {
-    switch (s) {
-      case ChangeStatus.added:
-        return Icons.add_circle_outline;
-      case ChangeStatus.modified:
-        return Icons.edit;
-      case ChangeStatus.deleted:
-        return Icons.remove_circle_outline;
-      case ChangeStatus.renamed:
-        return Icons.drive_file_rename_outline;
-      case ChangeStatus.copied:
-        return Icons.copy;
-    }
-  }
-
-  Color _colorForStatus(ChangeStatus s) {
-    switch (s) {
-      case ChangeStatus.added:
-        return Colors.green;
-      case ChangeStatus.modified:
-        return Colors.orange;
-      case ChangeStatus.deleted:
-        return Colors.red;
-      case ChangeStatus.renamed:
-        return Colors.blue;
-      case ChangeStatus.copied:
-        return Colors.purple;
-    }
   }
 
   String _formatTime(DateTime t) {
