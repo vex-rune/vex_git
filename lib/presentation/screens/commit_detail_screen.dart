@@ -121,24 +121,83 @@ class _CommitDetailScreenState extends ConsumerState<CommitDetailScreen> {
 
         const Divider(height: 1),
 
-        // File changes placeholder
+        // File changes
         const Padding(
-          padding: EdgeInsets.all(16),
-          child: Row(
-            children: [
-              Icon(Icons.info_outline, size: 16, color: Colors.orange),
-              SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  '文件变更详情需要 git_on_dart 支持 tree diff，当前版本暂不支持',
-                  style: TextStyle(fontSize: 12, color: Colors.orange),
-                ),
-              ),
-            ],
-          ),
+          padding: EdgeInsets.fromLTRB(16, 12, 16, 4),
+          child: Text('变更文件', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
         ),
+        _buildFileChanges(),
       ],
     );
+  }
+
+  Widget _buildFileChanges() {
+    final repo = ref.watch(currentRepoProvider);
+    if (repo == null) return const SizedBox.shrink();
+
+    final changesAsync = ref.watch(
+      FutureProvider<List<FileChange>>((ref) async {
+        final git = ref.read(gitServiceProvider);
+        return git.getCommitChanges(repo.localPath, widget.sha);
+      }),
+    );
+
+    return changesAsync.when(
+      data: (files) {
+        if (files.isEmpty) {
+          return const Padding(
+            padding: EdgeInsets.all(16),
+            child: Text('无文件变更', style: TextStyle(color: Colors.grey, fontSize: 12)),
+          );
+        }
+        return Column(
+          children: files.map((f) => ListTile(
+            leading: Icon(_iconForStatus(f.status), color: _colorForStatus(f.status), size: 18),
+            title: Text(f.path, style: const TextStyle(fontSize: 13)),
+            subtitle: Text(f.status.name, style: TextStyle(fontSize: 11, color: _colorForStatus(f.status))),
+            dense: true,
+          )).toList(),
+        );
+      },
+      loading: () => const Padding(
+        padding: EdgeInsets.all(16),
+        child: Center(child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))),
+      ),
+      error: (e, _) => Padding(
+        padding: const EdgeInsets.all(16),
+        child: Text('加载失败: $e', style: const TextStyle(fontSize: 12)),
+      ),
+    );
+  }
+
+  IconData _iconForStatus(ChangeStatus s) {
+    switch (s) {
+      case ChangeStatus.added:
+        return Icons.add_circle_outline;
+      case ChangeStatus.modified:
+        return Icons.edit;
+      case ChangeStatus.deleted:
+        return Icons.remove_circle_outline;
+      case ChangeStatus.renamed:
+        return Icons.drive_file_rename_outline;
+      case ChangeStatus.copied:
+        return Icons.copy;
+    }
+  }
+
+  Color _colorForStatus(ChangeStatus s) {
+    switch (s) {
+      case ChangeStatus.added:
+        return Colors.green;
+      case ChangeStatus.modified:
+        return Colors.orange;
+      case ChangeStatus.deleted:
+        return Colors.red;
+      case ChangeStatus.renamed:
+        return Colors.blue;
+      case ChangeStatus.copied:
+        return Colors.purple;
+    }
   }
 
   Widget _buildMetadataTile(IconData icon, String label, String value) {

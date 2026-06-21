@@ -1,3 +1,4 @@
+import '../../core/diff/diff_utils.dart';
 import '../entities/entities.dart';
 
 abstract class GitService {
@@ -15,8 +16,11 @@ abstract class GitService {
   /// 获取文件变更列表
   Future<List<FileChange>> getStatus(String repoPath);
 
-  /// 获取差异内容
-  Future<String> getDiff(String repoPath, String filePath);
+  /// 获取文件差异内容
+  Future<List<DiffLine>> getDiff(String repoPath, String filePath);
+
+  /// 获取某次提交的文件变更列表
+  Future<List<FileChange>> getCommitChanges(String repoPath, String commitSha);
 
   /// 暂存文件
   Future<void> stage(String repoPath, List<String> files);
@@ -34,10 +38,10 @@ abstract class GitService {
   Future<List<GitCommit>> getLog(String repoPath, {int limit = 50});
 
   /// 拉取
-  Future<void> pull(String repoPath);
+  Future<void> pull(String repoPath, {String? token});
 
   /// 推送
-  Future<void> push(String repoPath);
+  Future<void> push(String repoPath, {String? token});
 
   /// 获取分支列表
   Future<List<GitBranch>> getBranches(String repoPath);
@@ -59,4 +63,7 @@ abstract class GitService {
 
   /// 检测远程分支最新 commit sha
   Future<String?> getRemoteSha(String repoPath, String remote, String branch);
+
+  /// 丢弃所有未提交的改动（恢复到 HEAD 状态）
+  Future<void> discardAllChanges(String repoPath);
 }

@@ -1,8 +1,8 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../application/providers/git_providers.dart';
+import '../../core/diff/diff_utils.dart';
 import '../../domain/entities/entities.dart';
 
 class CommitScreen extends ConsumerStatefulWidget {
@@ -147,6 +147,17 @@ class _CommitScreenState extends ConsumerState<CommitScreen> {
                 ),
                 const Spacer(),
                 TextButton(
+                  onPressed: status.whenOrNull(
+                    data: (changes) => changes.isEmpty
+                        ? null
+                        : () => setState(() {
+                              _selectedFiles.clear();
+                              _selectedFiles.addAll(changes.map((c) => c.path));
+                            }),
+                  ),
+                  child: const Text('全选'),
+                ),
+                TextButton(
                   onPressed: () {
                     setState(() => _selectedFiles.clear());
                   },
@@ -206,14 +217,13 @@ class _CommitScreenState extends ConsumerState<CommitScreen> {
     final repo = ref.read(currentRepoProvider);
     if (repo == null) return;
 
-    final file = File('${repo.localPath}/${change.path}');
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       builder: (_) => DraggableScrollableSheet(
-        initialChildSize: 0.6,
+        initialChildSize: 0.7,
         minChildSize: 0.3,
-        maxChildSize: 0.9,
+        maxChildSize: 0.95,
         expand: false,
         builder: (_, controller) => Column(
           children: [
@@ -235,75 +245,18 @@ class _CommitScreenState extends ConsumerState<CommitScreen> {
               ),
             ),
             const Divider(height: 1),
-            // 文件内容
+            // Diff 内容
             Expanded(
-              child: FutureBuilder<String>(
-                future: _readFile(file),
-                builder: (_, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                  final content = snapshot.data ?? '(无法读取)';
-                  final lines = content.split('\n');
-                  return ListView.builder(
-                    controller: controller,
-                    itemCount: lines.length,
-                    itemBuilder: (_, i) {
-                      final line = lines[i];
-                      final isConflict = line.startsWith('<<<<<<<') ||
-                          line.startsWith('=======') ||
-                          line.startsWith('>>>>>>>');
-                      return Container(
-                        color: isConflict
-                            ? Colors.orange[900]?.withValues(alpha: 0.3)
-                            : null,
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            SizedBox(
-                              width: 40,
-                              child: Text(
-                                '${i + 1}',
-                                style: TextStyle(fontSize: 11, color: Colors.grey[600]),
-                                textAlign: TextAlign.right,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Text(
-                                line,
-                                style: TextStyle(
-                                  fontFamily: 'monospace',
-                                  fontSize: 12,
-                                  height: 1.5,
-                                  color: isConflict ? Colors.orange : null,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                      );
-                    },
-                  );
-                },
+              child: _DiffView(
+                repoPath: repo.localPath,
+                filePath: change.path,
+                controller: controller,
               ),
             ),
           ],
         ),
       ),
     );
-  }
-
-  Future<String> _readFile(File file) async {
-    try {
-      if (await file.exists()) {
-        return await file.readAsString();
-      }
-      return '(文件不存在)';
-    } catch (e) {
-      return '(读取失败: $e)';
-    }
   }
 
   IconData _iconForStatus(ChangeStatus s) {
@@ -334,5 +287,105 @@ class _CommitScreenState extends ConsumerState<CommitScreen> {
       case ChangeStatus.copied:
         return Colors.purple;
     }
+  }
+}
+
+class _DiffView extends ConsumerWidget {
+  final String repoPath;
+  final String filePath;
+  final ScrollController? controller;
+
+  const _DiffView({
+    required this.repoPath,
+    required this.filePath,
+    this.controller,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final diffAsync = ref.watch(diffProvider((repoPath: repoPath, filePath: filePath)));
+
+    return diffAsync.when(
+      data: (lines) {
+        if (lines.isEmpty) {
+          return const Center(
+            child: Text('无差异', style: TextStyle(color: Colors.grey)),
+          );
+        }
+        return ListView.builder(
+          controller: controller,
+          itemCount: lines.length,
+          itemBuilder: (_, i) {
+            final line = lines[i];
+            final bgColor = switch (line.type) {
+              DiffType.added => Colors.green.withValues(alpha: 0.15),
+              DiffType.removed => Colors.red.withValues(alpha: 0.15),
+              DiffType.context => null,
+            };
+            final prefix = switch (line.type) {
+              DiffType.added => '+',
+              DiffType.removed => '-',
+              DiffType.context => ' ',
+            };
+            final lineNo = switch (line.type) {
+              DiffType.added => line.newLineNo,
+              DiffType.removed => line.oldLineNo,
+              DiffType.context => line.oldLineNo,
+            };
+            final textColor = switch (line.type) {
+              DiffType.added => Colors.green[300],
+              DiffType.removed => Colors.red[300],
+              DiffType.context => Colors.grey[400],
+            };
+
+            return Container(
+              color: bgColor,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // 行号
+                  SizedBox(
+                    width: 28,
+                    child: Text(
+                      '$lineNo',
+                      style: TextStyle(fontSize: 10, color: Colors.grey[600]),
+                      textAlign: TextAlign.right,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  // +/- 标记
+                  SizedBox(
+                    width: 14,
+                    child: Text(
+                      prefix,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: textColor,
+                      ),
+                    ),
+                  ),
+                  // 内容
+                  Expanded(
+                    child: Text(
+                      line.content,
+                      style: TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                        height: 1.5,
+                        color: textColor,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (e, _) => Center(child: Text('加载失败: $e')),
+    );
   }
 }

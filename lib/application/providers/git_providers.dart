@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../../core/diff/diff_utils.dart';
 import '../../domain/entities/entities.dart';
 import '../../domain/services/git_service.dart';
 import '../../infrastructure/git/git_on_dart_impl.dart';
@@ -113,3 +114,10 @@ final logProvider =
 });
 
 final syncStatusProvider = StateProvider<SyncStatus>((ref) => SyncStatus.idle);
+
+final diffProvider =
+    FutureProvider.family<List<DiffLine>, ({String repoPath, String filePath})>(
+        (ref, params) async {
+  final git = ref.read(gitServiceProvider);
+  return git.getDiff(params.repoPath, params.filePath);
+});

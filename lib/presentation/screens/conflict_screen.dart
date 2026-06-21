@@ -32,8 +32,6 @@ class _ConflictScreenState extends ConsumerState<ConflictScreen> {
     try {
       final git = ref.read(gitServiceProvider);
       final changes = await git.getStatus(repo.localPath);
-      // 冲突文件通常状态为 modified（CONFLICT）
-      // 由于 git_on_dart 可能不直接标记冲突，我们通过检查文件内容中的冲突标记来检测
       final conflicts = <String>[];
       for (final change in changes) {
         if (change.status == ChangeStatus.modified) {
@@ -42,7 +40,6 @@ class _ConflictScreenState extends ConsumerState<ConflictScreen> {
             try {
               final content = await file.readAsString();
               if (content.contains('<<<<<<<') ||
-                  content.contains('=======') ||
                   content.contains('>>>>>>>')) {
                 conflicts.add(change.path);
               }
@@ -62,6 +59,33 @@ class _ConflictScreenState extends ConsumerState<ConflictScreen> {
     }
   }
 
+  Future<void> _commitResolution() async {
+    final repo = ref.read(currentRepoProvider);
+    if (repo == null) return;
+
+    try {
+      final git = ref.read(gitServiceProvider);
+      // Stage all resolved files
+      await git.stage(repo.localPath, _conflictFiles);
+      // Create merge commit
+      await git.commit(repo.localPath, 'Merge conflict resolution');
+      ref.invalidate(statusProvider(repo.localPath));
+      ref.invalidate(logProvider(repo.localPath));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('冲突解决并提交成功')),
+        );
+        context.pop();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('提交失败: $e')),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -71,6 +95,13 @@ class _ConflictScreenState extends ConsumerState<ConflictScreen> {
           icon: const Icon(Icons.arrow_back),
           onPressed: () => context.pop(),
         ),
+        actions: [
+          if (_conflictFiles.isNotEmpty)
+            TextButton(
+              onPressed: _commitResolution,
+              child: const Text('提交解决'),
+            ),
+        ],
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
@@ -87,17 +118,32 @@ class _ConflictScreenState extends ConsumerState<ConflictScreen> {
                         ],
                       ),
                     )
-                  : ListView.builder(
-                      itemCount: _conflictFiles.length,
-                      itemBuilder: (_, i) {
-                        final path = _conflictFiles[i];
-                        return ListTile(
-                          leading: const Icon(Icons.warning, color: Colors.orange),
-                          title: Text(path, style: const TextStyle(fontSize: 13)),
-                          trailing: const Icon(Icons.chevron_right),
-                          onTap: () => _showConflictDetail(path),
-                        );
-                      },
+                  : Column(
+                      children: [
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          color: Colors.orange[900]?.withValues(alpha: 0.3),
+                          child: Text(
+                            '${_conflictFiles.length} 个文件存在冲突，点击文件编辑解决',
+                            style: const TextStyle(fontSize: 12, color: Colors.orange),
+                          ),
+                        ),
+                        Expanded(
+                          child: ListView.builder(
+                            itemCount: _conflictFiles.length,
+                            itemBuilder: (_, i) {
+                              final path = _conflictFiles[i];
+                              return ListTile(
+                                leading: const Icon(Icons.warning, color: Colors.orange),
+                                title: Text(path, style: const TextStyle(fontSize: 13)),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () => _showConflictDetail(path),
+                              );
+                            },
+                          ),
+                        ),
+                      ],
                     ),
     );
   }
@@ -106,12 +152,12 @@ class _ConflictScreenState extends ConsumerState<ConflictScreen> {
     final repo = ref.read(currentRepoProvider);
     if (repo == null) return;
 
-    final file = File('${repo.localPath}/$path');
     Navigator.push(
       context,
       MaterialPageRoute(
         builder: (_) => _ConflictDetailPage(
-          filePath: file.path,
+          repoPath: repo.localPath,
+          filePath: path,
           onResolved: () {
             _loadConflicts();
           },
@@ -121,11 +167,71 @@ class _ConflictScreenState extends ConsumerState<ConflictScreen> {
   }
 }
 
+/// 解析冲突标记，提取本地/远程内容
+String _resolveWithLocal(String content) {
+  final buffer = StringBuffer();
+  var inConflict = false;
+  var inRemote = false;
+
+  for (final line in content.split('\n')) {
+    if (line.startsWith('<<<<<<<')) {
+      inConflict = true;
+      inRemote = false;
+      continue;
+    }
+    if (line.startsWith('=======')) {
+      inRemote = true;
+      continue;
+    }
+    if (line.startsWith('>>>>>>>')) {
+      inConflict = false;
+      inRemote = false;
+      continue;
+    }
+    if (!inConflict || !inRemote) {
+      buffer.writeln(line);
+    }
+  }
+  return buffer.toString().trimRight();
+}
+
+String _resolveWithRemote(String content) {
+  final buffer = StringBuffer();
+  var inConflict = false;
+  var inRemote = false;
+
+  for (final line in content.split('\n')) {
+    if (line.startsWith('<<<<<<<')) {
+      inConflict = true;
+      inRemote = false;
+      continue;
+    }
+    if (line.startsWith('=======')) {
+      inRemote = true;
+      continue;
+    }
+    if (line.startsWith('>>>>>>>')) {
+      inConflict = false;
+      inRemote = false;
+      continue;
+    }
+    if (!inConflict || inRemote) {
+      buffer.writeln(line);
+    }
+  }
+  return buffer.toString().trimRight();
+}
+
 class _ConflictDetailPage extends StatefulWidget {
+  final String repoPath;
   final String filePath;
   final VoidCallback onResolved;
 
-  const _ConflictDetailPage({required this.filePath, required this.onResolved});
+  const _ConflictDetailPage({
+    required this.repoPath,
+    required this.filePath,
+    required this.onResolved,
+  });
 
   @override
   State<_ConflictDetailPage> createState() => _ConflictDetailPageState();
@@ -144,7 +250,8 @@ class _ConflictDetailPageState extends State<_ConflictDetailPage> {
 
   Future<void> _loadFile() async {
     try {
-      final file = File(widget.filePath);
+      final fullPath = '${widget.repoPath}/${widget.filePath}';
+      final file = File(fullPath);
       if (await file.exists()) {
         final content = await file.readAsString();
         setState(() {
@@ -168,6 +275,20 @@ class _ConflictDetailPageState extends State<_ConflictDetailPage> {
     super.dispose();
   }
 
+  void _resolveLocal() {
+    final resolved = _resolveWithLocal(_controller.text);
+    setState(() {
+      _controller.text = resolved;
+    });
+  }
+
+  void _resolveRemote() {
+    final resolved = _resolveWithRemote(_controller.text);
+    setState(() {
+      _controller.text = resolved;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final fileName = widget.filePath.split('/').last;
@@ -175,6 +296,14 @@ class _ConflictDetailPageState extends State<_ConflictDetailPage> {
       appBar: AppBar(
         title: Text(fileName, style: const TextStyle(fontSize: 14)),
         actions: [
+          TextButton(
+            onPressed: () => _resolveLocal(),
+            child: const Text('保留本地', style: TextStyle(color: Colors.green)),
+          ),
+          TextButton(
+            onPressed: () => _resolveRemote(),
+            child: const Text('保留远程', style: TextStyle(color: Colors.blue)),
+          ),
           TextButton(
             onPressed: _saveFile,
             child: const Text('保存'),
@@ -188,7 +317,7 @@ class _ConflictDetailPageState extends State<_ConflictDetailPage> {
                 // 冲突说明
                 Container(
                   width: double.infinity,
-                  padding: const EdgeInsets.all(12),
+                  padding: const EdgeInsets.all(10),
                   color: Colors.orange[900]?.withValues(alpha: 0.3),
                   child: const Row(
                     children: [
@@ -196,30 +325,16 @@ class _ConflictDetailPageState extends State<_ConflictDetailPage> {
                       SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          '编辑文件移除冲突标记（<<<<<<<、=======、>>>>>>>）后保存',
+                          '可手动编辑，或点击顶部「保留本地/远程」快速解决',
                           style: TextStyle(fontSize: 12, color: Colors.orange),
                         ),
                       ),
                     ],
                   ),
                 ),
-                // 编辑器
+                // 冲突内容（带高亮）
                 Expanded(
-                  child: TextField(
-                    controller: _controller,
-                    maxLines: null,
-                    expands: true,
-                    textAlignVertical: TextAlignVertical.top,
-                    decoration: const InputDecoration(
-                      border: InputBorder.none,
-                      contentPadding: EdgeInsets.all(12),
-                    ),
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 13,
-                      height: 1.5,
-                    ),
-                  ),
+                  child: _ConflictEditor(controller: _controller),
                 ),
               ],
             ),
@@ -228,12 +343,22 @@ class _ConflictDetailPageState extends State<_ConflictDetailPage> {
 
   Future<void> _saveFile() async {
     try {
-      final file = File(widget.filePath);
+      final fullPath = '${widget.repoPath}/${widget.filePath}';
+      final file = File(fullPath);
       await file.writeAsString(_controller.text);
+
+      // 自动 stage 已解决的文件
+      if (mounted) {
+        try {
+          final git = ProviderScope.containerOf(context).read(gitServiceProvider);
+          await git.stage(widget.repoPath, [widget.filePath]);
+        } catch (_) {}
+      }
+
       widget.onResolved();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('文件已保存')),
+          const SnackBar(content: Text('文件已保存并暂存')),
         );
         Navigator.pop(context);
       }
@@ -244,5 +369,77 @@ class _ConflictDetailPageState extends State<_ConflictDetailPage> {
         );
       }
     }
+  }
+}
+
+/// 冲突内容编辑器，高亮冲突标记行
+class _ConflictEditor extends StatelessWidget {
+  final TextEditingController controller;
+
+  const _ConflictEditor({required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<TextEditingValue>(
+      valueListenable: controller,
+      builder: (_, value, _) {
+        final lines = value.text.split('\n');
+        return ListView.builder(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          itemCount: lines.length,
+          itemBuilder: (_, i) {
+            final line = lines[i];
+            final isOurs = line.startsWith('<<<<<<<');
+            final isSeparator = line.startsWith('=======');
+            final isTheirs = line.startsWith('>>>>>>>');
+            final isMarker = isOurs || isSeparator || isTheirs;
+
+            Color? bgColor;
+            Color? textColor;
+            if (isOurs) {
+              bgColor = Colors.green.withValues(alpha: 0.2);
+              textColor = Colors.green[300];
+            } else if (isSeparator) {
+              bgColor = Colors.grey.withValues(alpha: 0.2);
+              textColor = Colors.grey[400];
+            } else if (isTheirs) {
+              bgColor = Colors.blue.withValues(alpha: 0.2);
+              textColor = Colors.blue[300];
+            }
+
+            return Container(
+              color: bgColor,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 28,
+                    child: Text(
+                      '${i + 1}',
+                      style: TextStyle(fontSize: 10, color: Colors.grey[600]),
+                      textAlign: TextAlign.right,
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      line,
+                      style: TextStyle(
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                        height: 1.5,
+                        color: textColor,
+                        fontWeight: isMarker ? FontWeight.bold : null,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 }

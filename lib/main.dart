@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'application/providers/git_providers.dart';
 import 'application/providers/settings_providers.dart';
+import 'application/services/remote_scanner.dart';
 import 'l10n/app_localizations.dart';
 import 'presentation/screens/home_screen.dart';
 import 'presentation/screens/clone_screen.dart';
@@ -90,14 +91,20 @@ class _GitVexAppState extends ConsumerState<GitVexApp> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       ref.read(repositoriesProvider.notifier).loadRepos();
+      // 启动远程巡检
+      ref.read(remoteScanProvider).start();
     });
   }
 
   @override
   Widget build(BuildContext context) {
     final themeMode = ref.watch(themeModeProvider);
+    final locale = ref.watch(localeProvider);
+    final notification = ref.watch(syncNotificationProvider);
+
     return MaterialApp.router(
       title: 'GitVex',
+      locale: locale,
       theme: ThemeData.light(useMaterial3: true),
       darkTheme: ThemeData.dark(useMaterial3: true),
       themeMode: themeMode,
@@ -111,6 +118,48 @@ class _GitVexAppState extends ConsumerState<GitVexApp> {
         Locale('zh'),
         Locale('en'),
       ],
+      builder: (context, child) {
+        // 巡检通知横幅
+        if (notification != null && child != null) {
+          return Stack(
+            children: [
+              child,
+              Positioned(
+                top: MediaQuery.of(context).padding.top + 4,
+                left: 12,
+                right: 12,
+                child: Material(
+                  elevation: 6,
+                  borderRadius: BorderRadius.circular(8),
+                  color: Colors.green[700],
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.cloud_download, color: Colors.white, size: 18),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            notification.message,
+                            style: const TextStyle(color: Colors.white, fontSize: 13),
+                          ),
+                        ),
+                        InkWell(
+                          onTap: () {
+                            ref.read(syncNotificationProvider.notifier).state = null;
+                          },
+                          child: const Icon(Icons.close, color: Colors.white70, size: 16),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          );
+        }
+        return child ?? const SizedBox.shrink();
+      },
       routerConfig: router,
       debugShowCheckedModeBanner: false,
     );

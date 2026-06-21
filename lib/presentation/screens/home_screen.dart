@@ -4,12 +4,22 @@ import 'package:go_router/go_router.dart';
 import '../../application/providers/git_providers.dart';
 import '../../domain/entities/entities.dart';
 import 'package:path_provider/path_provider.dart';
+import 'dart:async';
 import 'dart:io';
 
-final changeCountProvider = FutureProvider.family<int, String>((ref, localPath) async {
+/// 每 30 秒轮询一次变更数量，实现实时监测
+final changeCountProvider = StreamProvider.family<int, String>((ref, localPath) async* {
   final git = ref.read(gitServiceProvider);
-  final changes = await git.getStatus(localPath);
-  return changes.length;
+  // 初始加载
+  final initial = await git.getStatus(localPath);
+  yield initial.length;
+  // 每 30 秒轮询
+  await for (final _ in Stream.periodic(const Duration(seconds: 30))) {
+    try {
+      final changes = await git.getStatus(localPath);
+      yield changes.length;
+    } catch (_) {}
+  }
 });
 
 class HomeScreen extends ConsumerWidget {

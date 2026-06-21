@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 import '../../application/providers/git_providers.dart';
+import '../../application/providers/settings_providers.dart';
+import '../../core/errors/exceptions.dart';
 import '../../domain/entities/entities.dart';
 
 class CloneScreen extends ConsumerStatefulWidget {
@@ -29,13 +31,22 @@ class _CloneScreenState extends ConsumerState<CloneScreen> {
     if (url.isEmpty) return;
 
     final platform = GitPlatform.fromUrl(url);
-    final token = _tokenController.text.trim();
+    var token = _tokenController.text.trim();
     String fullUrl = url;
 
-    // Token 注入
+    // Token 注入：优先使用用户输入，其次使用 settings 中存储的 token
+    if (token.isEmpty) {
+      final config = ref.read(vexConfigProvider);
+      if (platform == GitPlatform.github) {
+        token = config.githubToken ?? '';
+      } else if (platform == GitPlatform.gitee) {
+        token = config.giteeToken ?? '';
+      }
+    }
+
     if (token.isNotEmpty && platform == GitPlatform.github) {
       fullUrl = url.replaceFirst('github.com', '.$token@github.com');
-    } else if (platform == GitPlatform.gitee) {
+    } else if (token.isNotEmpty && platform == GitPlatform.gitee) {
       fullUrl = url.replaceFirst('gitee.com', '$token@gitee.com');
     }
 
@@ -63,7 +74,7 @@ class _CloneScreenState extends ConsumerState<CloneScreen> {
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('克隆失败: $e')),
+          SnackBar(content: Text(formatError(e))),
         );
       }
     } finally {

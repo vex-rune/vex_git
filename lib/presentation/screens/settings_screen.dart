@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../application/providers/settings_providers.dart';
@@ -167,16 +168,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             leading: const Icon(Icons.language),
             title: const Text('Language'),
             trailing: DropdownButton<String>(
-              value: Localizations.localeOf(context).languageCode,
+              value: ref.watch(localeProvider).languageCode,
               items: const [
                 DropdownMenuItem(value: 'zh', child: Text('中文')),
                 DropdownMenuItem(value: 'en', child: Text('English')),
               ],
               onChanged: (v) {
-                // 语言切换需要重启 App，暂不实现动态切换
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('语言切换将在重启后生效')),
-                );
+                if (v != null) {
+                  ref.read(localeProvider.notifier).setLocale(Locale(v));
+                }
               },
             ),
           ),
@@ -228,10 +228,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   ],
                 ),
               );
-              if (confirm == true && mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('缓存已清除')),
-                );
+              if (confirm == true) {
+                // 清理 SharedPreferences（保留仓库列表）
+                final prefs = await SharedPreferences.getInstance();
+                await prefs.remove('scan_interval');
+                await prefs.remove('theme_mode');
+                // 清理 vex.config
+                try {
+                  final config = ref.read(vexConfigProvider);
+                  config.githubToken = null;
+                  config.giteeToken = null;
+                } catch (_) {}
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('缓存已清除')),
+                  );
+                }
               }
             },
           ),
@@ -374,9 +386,9 @@ class _SshKeyPageState extends State<_SshKeyPage> {
                                 icon: const Icon(Icons.copy, size: 18),
                                 tooltip: '复制公钥',
                                 onPressed: () {
-                                  // 需要 flutter/services.dart 的 Clipboard
+                                  Clipboard.setData(ClipboardData(text: _publicKey!));
                                   ScaffoldMessenger.of(context).showSnackBar(
-                                    const SnackBar(content: Text('公钥已复制')),
+                                    const SnackBar(content: Text('公钥已复制到剪贴板')),
                                   );
                                 },
                               ),

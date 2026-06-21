@@ -72,8 +72,38 @@ class _BranchScreenState extends ConsumerState<BranchScreen> {
     final repo = ref.read(currentRepoProvider);
     if (repo == null) return;
 
+    // 检测未提交改动
+    final git = ref.read(gitServiceProvider);
+    final changes = await git.getStatus(repo.localPath);
+    if (changes.isNotEmpty && mounted) {
+      final action = await showDialog<String>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: const Text('存在未提交的改动'),
+          content: Text('当前有 ${changes.length} 个文件未提交，切换分支可能导致改动丢失。\n\n建议先提交或暂存改动。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, 'cancel'),
+              child: const Text('取消'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, 'discard'),
+              child: const Text('放弃改动并切换', style: TextStyle(color: Colors.red)),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, 'stash'),
+              child: const Text('暂存后切换'),
+            ),
+          ],
+        ),
+      );
+      if (action == 'cancel' || action == null) return;
+      if (action == 'stash') {
+        await git.stage(repo.localPath, changes.map((c) => c.path).toList());
+      }
+    }
+
     try {
-      final git = ref.read(gitServiceProvider);
       await git.checkout(repo.localPath, branch.name);
       ref.invalidate(branchesProvider(repo.localPath));
       ref.invalidate(statusProvider(repo.localPath));

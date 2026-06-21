@@ -1,7 +1,10 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../application/providers/git_providers.dart';
+import '../../application/providers/settings_providers.dart';
+import '../../core/errors/exceptions.dart';
 import '../../domain/entities/entities.dart';
 import '../widgets/file_tree_widget.dart';
 
@@ -34,7 +37,6 @@ class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
     final repo = ref.read(currentRepoProvider);
     if (repo == null) return;
 
-    // 检查是否有未提交的改动
     final git = ref.read(gitServiceProvider);
     final changes = await git.getStatus(repo.localPath);
     if (changes.isNotEmpty) {
@@ -50,6 +52,10 @@ class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
               child: const Text('取消'),
             ),
             TextButton(
+              onPressed: () => Navigator.pop(context, 'discard'),
+              child: const Text('放弃修改', style: TextStyle(color: Colors.red)),
+            ),
+            TextButton(
               onPressed: () => Navigator.pop(context, 'stash'),
               child: const Text('暂存修改'),
             ),
@@ -61,8 +67,15 @@ class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
         ),
       );
       if (action == 'cancel' || action == null) return;
-      // stash 暂存：stage 所有文件后 checkout
-      if (action == 'stash') {
+      if (action == 'discard') {
+        try {
+          await git.discardAllChanges(repo.localPath);
+          ref.invalidate(statusProvider(repo.localPath));
+        } catch (e) {
+          _showError(e);
+          return;
+        }
+      } else if (action == 'stash') {
         try {
           await git.stage(repo.localPath, changes.map((c) => c.path).toList());
         } catch (e) {
@@ -74,14 +87,40 @@ class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
 
     ref.read(syncStatusProvider.notifier).state = SyncStatus.syncing;
     try {
-      await git.pull(repo.localPath);
+      await git.pull(repo.localPath, token: _resolveToken(repo));
       ref.read(syncStatusProvider.notifier).state = SyncStatus.success;
       ref.invalidate(statusProvider(repo.localPath));
       ref.invalidate(logProvider(repo.localPath));
+
+      // 检测是否存在冲突标记，自动跳转冲突页
+      if (!mounted) return;
+      final postChanges = await git.getStatus(repo.localPath);
+      final hasConflicts = await _detectConflicts(repo.localPath, postChanges);
+      if (hasConflicts && mounted) {
+        context.push('/repo/${repo.id}/conflict');
+      }
     } catch (e) {
       _showError(e);
       ref.read(syncStatusProvider.notifier).state = SyncStatus.idle;
     }
+  }
+
+  /// 通过检查文件内容检测冲突标记
+  Future<bool> _detectConflicts(String repoPath, List<FileChange> changes) async {
+    for (final change in changes) {
+      if (change.status == ChangeStatus.modified) {
+        final file = File('$repoPath/${change.path}');
+        if (await file.exists()) {
+          try {
+            final content = await file.readAsString();
+            if (content.contains('<<<<<<<') || content.contains('>>>>>>>')) {
+              return true;
+            }
+          } catch (_) {}
+        }
+      }
+    }
+    return false;
   }
 
   Future<void> _push() async {
@@ -122,18 +161,45 @@ class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
         }
       }
 
-      await git.push(repo.localPath);
+      await git.push(repo.localPath, token: _resolveToken(repo));
       ref.read(syncStatusProvider.notifier).state = SyncStatus.success;
     } catch (e) {
       _showError(e);
       ref.read(syncStatusProvider.notifier).state = SyncStatus.idle;
+
+      // 检测是否因冲突导致推送失败，自动跳转冲突页
+      if (!mounted) return;
+      try {
+        final git = ref.read(gitServiceProvider);
+        final changes = await git.getStatus(repo.localPath);
+        final hasConflicts = await _detectConflicts(repo.localPath, changes);
+        if (hasConflicts && mounted) {
+          context.push('/repo/${repo.id}/conflict');
+        }
+      } catch (_) {}
     }
   }
 
   void _showError(Object e) {
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('操作失败: $e')),
+      SnackBar(content: Text(formatError(e))),
     );
+  }
+
+  /// 根据仓库 remote URL 解析对应的 token
+  String? _resolveToken(Repository repo) {
+    // 优先使用仓库专属 token
+    if (repo.token != null && repo.token!.isNotEmpty) return repo.token;
+    // 根据平台使用全局 token
+    final config = ref.read(vexConfigProvider);
+    switch (repo.platform) {
+      case GitPlatform.github:
+        return config.githubToken;
+      case GitPlatform.gitee:
+        return config.giteeToken;
+      case GitPlatform.unknown:
+        return config.githubToken ?? config.giteeToken;
+    }
   }
 
   void _showMergeDialog(Repository repo, AsyncValue<List<GitBranch>> branches) {

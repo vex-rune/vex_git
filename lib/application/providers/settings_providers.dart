@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 const _themeKey = 'theme_mode';
 const _scanIntervalKey = 'scan_interval';
+const _localeKey = 'locale';
 
 // ---- 主题 & 巡检周期（SharedPreferences）----
 
@@ -58,6 +59,31 @@ class ScanIntervalNotifier extends StateNotifier<int> {
     state = minutes;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setInt(_scanIntervalKey, minutes);
+  }
+}
+
+final localeProvider =
+    StateNotifierProvider<LocaleNotifier, Locale>((ref) {
+  return LocaleNotifier();
+});
+
+class LocaleNotifier extends StateNotifier<Locale> {
+  LocaleNotifier() : super(const Locale('zh')) {
+    _load();
+  }
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    final code = prefs.getString(_localeKey);
+    if (code != null) {
+      state = Locale(code);
+    }
+  }
+
+  Future<void> setLocale(Locale locale) async {
+    state = locale;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_localeKey, locale.languageCode);
   }
 }
 
