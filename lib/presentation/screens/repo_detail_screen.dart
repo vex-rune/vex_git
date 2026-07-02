@@ -1,491 +1,449 @@
-import 'dart:io';
+﻿import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:go_router/go_router.dart';
-import '../../application/providers/git_providers.dart';
-import '../../application/providers/settings_providers.dart';
-import '../../core/errors/exceptions.dart';
-import '../../domain/entities/entities.dart';
-import '../widgets/file_tree_widget.dart';
 
-class RepoDetailScreen extends ConsumerStatefulWidget {
+import '../../domain/entities/app_config.dart';
+import '../../domain/entities/git_entities.dart';
+import '../../l10n/app_localizations.dart';
+import '../providers/providers.dart';
+import '../widgets/diff_view.dart';
+
+final _repoByIdProvider = FutureProvider.family<RepoConfig?, String>((ref, id) async {
+  final cfg = await ref.read(appConfigRepoProvider).load();
+  final matches = cfg.repositories.where((r) => r.id == id);
+  return matches.isNotEmpty ? matches.first : null;
+});
+
+final _statusStreamProvider = StreamProvider.family<RepoStatus, String>((ref, repoId) {
+  final repoAsync = ref.watch(_repoByIdProvider(repoId));
+  final repo = repoAsync.value;
+  if (repo == null) return const Stream.empty();
+  return ref.read(watchRepoStatusProvider).call(repo.localPath);
+});
+
+final _diffProvider = FutureProvider.family<List<FileDiff>, String>((ref, repoId) async {
+  final repoAsync = ref.watch(_repoByIdProvider(repoId));
+  final repo = repoAsync.value;
+  if (repo == null) return const [];
+  return ref.read(getDiffProvider).call(repo.localPath);
+});
+
+final _logProvider = FutureProvider.family<List<Commit>, String>((ref, repoId) async {
+  final repoAsync = ref.watch(_repoByIdProvider(repoId));
+  final repo = repoAsync.value;
+  if (repo == null) return const [];
+  return ref.read(getCommitLogProvider).call(repo.localPath, maxCount: 30);
+});
+
+class RepoDetailScreen extends ConsumerWidget {
   final String repoId;
-
   const RepoDetailScreen({super.key, required this.repoId});
 
   @override
-  ConsumerState<RepoDetailScreen> createState() => _RepoDetailScreenState();
-}
-
-class _RepoDetailScreenState extends ConsumerState<RepoDetailScreen>
-    with SingleTickerProviderStateMixin {
-  late TabController _tabController;
-
-  @override
-  void initState() {
-    super.initState();
-    _tabController = TabController(length: 3, vsync: this);
-  }
-
-  @override
-  void dispose() {
-    _tabController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _pull() async {
-    final repo = ref.read(currentRepoProvider);
-    if (repo == null) return;
-
-    final git = ref.read(gitServiceProvider);
-    final changes = await git.getStatus(repo.localPath);
-    if (changes.isNotEmpty) {
-      if (!mounted) return;
-      final action = await showDialog<String>(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text('存在未提交的改动'),
-          content: Text('当前有 ${changes.length} 个文件未提交，拉取可能导致冲突。\n\n建议先提交或暂存改动。'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'cancel'),
-              child: const Text('取消'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'discard'),
-              child: const Text('放弃修改', style: TextStyle(color: Colors.red)),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'stash'),
-              child: const Text('暂存修改'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'force'),
-              child: const Text('强制拉取', style: TextStyle(color: Colors.orange)),
-            ),
-          ],
-        ),
-      );
-      if (action == 'cancel' || action == null) return;
-      if (action == 'discard') {
-        try {
-          await git.discardAllChanges(repo.localPath);
-          ref.invalidate(statusProvider(repo.localPath));
-        } catch (e) {
-          _showError(e);
-          return;
-        }
-      } else if (action == 'stash') {
-        try {
-          await git.stage(repo.localPath, changes.map((c) => c.path).toList());
-        } catch (e) {
-          _showError(e);
-          return;
-        }
-      }
-    }
-
-    ref.read(syncStatusProvider.notifier).state = SyncStatus.syncing;
-    try {
-      await git.pull(repo.localPath, token: _resolveToken(repo));
-      ref.read(syncStatusProvider.notifier).state = SyncStatus.success;
-      ref.invalidate(statusProvider(repo.localPath));
-      ref.invalidate(logProvider(repo.localPath));
-
-      // 检测是否存在冲突标记，自动跳转冲突页
-      if (!mounted) return;
-      final postChanges = await git.getStatus(repo.localPath);
-      final hasConflicts = await _detectConflicts(repo.localPath, postChanges);
-      if (hasConflicts && mounted) {
-        context.push('/repo/${repo.id}/conflict');
-      }
-    } catch (e) {
-      _showError(e);
-      ref.read(syncStatusProvider.notifier).state = SyncStatus.idle;
-    }
-  }
-
-  /// 通过检查文件内容检测冲突标记
-  Future<bool> _detectConflicts(String repoPath, List<FileChange> changes) async {
-    for (final change in changes) {
-      if (change.status == ChangeStatus.modified) {
-        final file = File('$repoPath/${change.path}');
-        if (await file.exists()) {
-          try {
-            final content = await file.readAsString();
-            if (content.contains('<<<<<<<') || content.contains('>>>>>>>')) {
-              return true;
-            }
-          } catch (_) {}
-        }
-      }
-    }
-    return false;
-  }
-
-  Future<void> _push() async {
-    final repo = ref.read(currentRepoProvider);
-    if (repo == null) return;
-    ref.read(syncStatusProvider.notifier).state = SyncStatus.syncing;
-    try {
-      final git = ref.read(gitServiceProvider);
-
-      // 检查远程是否有新提交
-      final currentBranch = await git.getCurrentBranch(repo.localPath);
-      final remoteSha = await git.getRemoteSha(repo.localPath, 'origin', currentBranch);
-      if (remoteSha != null) {
-        final log = await git.getLog(repo.localPath, limit: 1);
-        final localSha = log.isNotEmpty ? log.first.sha : null;
-        if (localSha != remoteSha) {
-          if (!mounted) return;
-          ref.read(syncStatusProvider.notifier).state = SyncStatus.idle;
-          final proceed = await showDialog<bool>(
-            context: context,
-            builder: (_) => AlertDialog(
-              title: const Text('远程有新提交'),
-              content: const Text('远程分支存在新的提交，直接推送可能被拒绝。\n\n建议先拉取合并后再推送。'),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  child: const Text('取消'),
-                ),
-                TextButton(
-                  onPressed: () => Navigator.pop(context, true),
-                  child: const Text('继续推送'),
-                ),
-              ],
-            ),
-          );
-          if (proceed != true) return;
-          ref.read(syncStatusProvider.notifier).state = SyncStatus.syncing;
-        }
-      }
-
-      await git.push(repo.localPath, token: _resolveToken(repo));
-      ref.read(syncStatusProvider.notifier).state = SyncStatus.success;
-    } catch (e) {
-      _showError(e);
-      ref.read(syncStatusProvider.notifier).state = SyncStatus.idle;
-
-      // 检测是否因冲突导致推送失败，自动跳转冲突页
-      if (!mounted) return;
-      try {
-        final git = ref.read(gitServiceProvider);
-        final changes = await git.getStatus(repo.localPath);
-        final hasConflicts = await _detectConflicts(repo.localPath, changes);
-        if (hasConflicts && mounted) {
-          context.push('/repo/${repo.id}/conflict');
-        }
-      } catch (_) {}
-    }
-  }
-
-  void _showError(Object e) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(formatError(e))),
-    );
-  }
-
-  /// 根据仓库 remote URL 解析对应的 token
-  String? _resolveToken(Repository repo) {
-    // 优先使用仓库专属 token
-    if (repo.token != null && repo.token!.isNotEmpty) return repo.token;
-    // 根据平台使用全局 token
-    final config = ref.read(vexConfigProvider);
-    switch (repo.platform) {
-      case GitPlatform.github:
-        return config.githubToken;
-      case GitPlatform.gitee:
-        return config.giteeToken;
-      case GitPlatform.unknown:
-        return config.githubToken ?? config.giteeToken;
-    }
-  }
-
-  void _showMergeDialog(Repository repo, AsyncValue<List<GitBranch>> branches) {
-    branches.whenData((list) {
-      final currentBranch = list.firstWhere(
-        (b) => b.isCurrent,
-        orElse: () => const GitBranch(name: 'main', type: BranchType.local),
-      );
-      final mergeable = list.where(
-        (b) => !b.isCurrent && b.type == BranchType.local,
-      ).toList();
-
-      if (mergeable.isEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('没有可合并的分支')),
-        );
-        return;
-      }
-
-      showDialog(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text('合并分支'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('将以下分支合并到 ${currentBranch.name}：'),
-              const SizedBox(height: 12),
-              ...mergeable.map((b) => ListTile(
-                    leading: const Icon(Icons.call_split, size: 20),
-                    title: Text(b.name),
-                    dense: true,
-                    onTap: () async {
-                      Navigator.pop(context);
-                      try {
-                        final git = ref.read(gitServiceProvider);
-                        await git.merge(repo.localPath, b.name);
-                        ref.invalidate(statusProvider(repo.localPath));
-                        ref.invalidate(logProvider(repo.localPath));
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(content: Text('已合并 ${b.name}')),
-                          );
-                        }
-                      } catch (e) {
-                        _showError(e);
-                      }
-                    },
-                  )),
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l = AppLocalizations.of(context);
+    final repoAsync = ref.watch(_repoByIdProvider(repoId));
+    return DefaultTabController(
+      length: 3,
+      child: Scaffold(
+        appBar: AppBar(
+          title: repoAsync.when(
+            data: (r) => Text(r?.name ?? 'Repository'),
+            loading: () => const Text('...'),
+            error: (_, __) => Text(l.commonError),
+          ),
+          bottom: const TabBar(
+            tabs: [
+              Tab(icon: Icon(Icons.edit_note), text: 'Changes'),
+              Tab(icon: Icon(Icons.history), text: 'History'),
+              Tab(icon: Icon(Icons.account_tree), text: 'Branches'),
             ],
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('取消'),
+            PopupMenuButton<String>(
+              onSelected: (v) => _onMenu(context, ref, v),
+              itemBuilder: (_) => [
+                PopupMenuItem(value: 'fetch', child: Text(l.syncFetch)),
+                PopupMenuItem(value: 'pull', child: Text(l.syncPull)),
+                PopupMenuItem(value: 'push', child: Text(l.syncPush)),
+                const PopupMenuDivider(),
+                PopupMenuItem(value: 'commit', child: Text(l.changesCommit)),
+              ],
             ),
           ],
         ),
-      );
-    });
+        body: repoAsync.when(
+          data: (r) {
+            if (r == null) return const Center(child: Text('Not found'));
+            return TabBarView(
+              children: [
+                _ChangesTab(repoId: repoId),
+                _HistoryTab(repoId: repoId),
+                _BranchesTab(repoId: repoId),
+              ],
+            );
+          },
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (e, _) => Center(child: Text('${l.commonError}: $e')),
+        ),
+      ),
+    );
   }
+
+  Future<void> _onMenu(BuildContext context, WidgetRef ref, String action) async {
+    final l = AppLocalizations.of(context);
+    final repo = await ref.read(_repoByIdProvider(repoId).future);
+    if (repo == null || !context.mounted) return;
+    switch (action) {
+      case 'fetch':
+        if (!context.mounted) return;
+        await _runStream(context, ref, l.syncFetch, () => ref.read(fetchProvider).call(repo.localPath));
+        break;
+      case 'pull':
+        if (!context.mounted) return;
+        await _runStream(context, ref, l.syncPull, () => ref.read(pullProvider).call(repo.localPath));
+        ref.invalidate(_statusStreamProvider(repoId));
+        ref.invalidate(_diffProvider(repoId));
+        break;
+      case 'push':
+        if (!context.mounted) return;
+        await _runStream(context, ref, l.syncPush, () => ref.read(pushProvider).call(repo.localPath));
+        ref.invalidate(_statusStreamProvider(repoId));
+        break;
+      case 'commit':
+        if (context.mounted) { unawaited(context.push('/commit/$repoId')); }
+        break;
+    }
+  }
+
+  Future<void> _runStream(
+    BuildContext context,
+    WidgetRef ref,
+    String title,
+    Stream<ProgressEvent> Function() factory,
+  ) async {
+    final progress = ValueNotifier<ProgressEvent?>(null);
+    final navigator = Navigator.of(context, rootNavigator: true);
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dctx) => AlertDialog(
+        title: Text('$title...'),
+        content: ValueListenableBuilder<ProgressEvent?>(
+          valueListenable: progress,
+          builder: (_, ev, __) {
+            if (ev == null) return const LinearProgressIndicator();
+            final ratio = ev.ratio;
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('${ev.phase} ${ev.current}/${ev.total ?? "?"}'),
+                if (ratio != null) ...[
+                  const SizedBox(height: 8),
+                  LinearProgressIndicator(value: ratio),
+                ],
+              ],
+            );
+          },
+        ),
+      ),
+    );
+    final sub = (factory()).listen(
+      (e) => progress.value = e,
+      onError: (Object e) {
+        navigator.pop();
+        progress.dispose();
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+        }
+      },
+      onDone: () {
+        navigator.pop();
+        progress.dispose();
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$title done')));
+        }
+      },
+    );
+    unawaited(sub.asFuture<void>().catchError((Object _) {}));
+  }
+}
+
+class _ChangesTab extends ConsumerWidget {
+  final String repoId;
+  const _ChangesTab({required this.repoId});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l = AppLocalizations.of(context);
+    final statusAsync = ref.watch(_statusStreamProvider(repoId));
+    final diffAsync = ref.watch(_diffProvider(repoId));
+    return RefreshIndicator(
+      onRefresh: () async {
+        ref.invalidate(_statusStreamProvider(repoId));
+        ref.invalidate(_diffProvider(repoId));
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+      },
+      child: statusAsync.when(
+        data: (status) {
+          if (status.totalChanges == 0) {
+            return ListView(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(48),
+                  child: Center(child: Text(l.changesNoChanges)),
+                ),
+              ],
+            );
+          }
+          return ListView(
+            children: [
+              _SyncBar(status: status),
+              if (status.staged.isNotEmpty) ...[
+                _SectionLabel(label: '${l.changesStaged} (${status.staged.length})'),
+                for (final c in status.staged) _FileChangeRow(repoId: repoId, change: c, staged: true),
+              ],
+              if (status.unstaged.isNotEmpty) ...[
+                _SectionLabel(label: '${l.changesWorking} (${status.unstaged.length})'),
+                for (final c in status.unstaged) _FileChangeRow(repoId: repoId, change: c, staged: false),
+              ],
+              if (status.untracked.isNotEmpty) ...[
+                _SectionLabel(label: 'Untracked (${status.untracked.length})'),
+                for (final c in status.untracked) _FileChangeRow(repoId: repoId, change: c, staged: false),
+              ],
+              const SizedBox(height: 16),
+              diffAsync.when(
+                data: (diffs) => diffs.isEmpty
+                    ? const SizedBox.shrink()
+                    : Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        child: DiffView(diffs: diffs),
+                      ),
+                loading: () => const Padding(padding: EdgeInsets.all(16), child: LinearProgressIndicator()),
+                error: (e, _) => Padding(padding: const EdgeInsets.all(16), child: Text('${l.commonError}: $e')),
+              ),
+            ],
+          );
+        },
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (e, _) => Center(child: Text('${l.commonError}: $e')),
+      ),
+    );
+  }
+}
+
+class _HistoryTab extends ConsumerWidget {
+  final String repoId;
+  const _HistoryTab({required this.repoId});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l = AppLocalizations.of(context);
+    final async = ref.watch(_logProvider(repoId));
+    return async.when(
+      data: (list) {
+        if (list.isEmpty) return Center(child: Text(l.historyNoCommits));
+        return RefreshIndicator(
+          onRefresh: () async {
+            ref.invalidate(_logProvider(repoId));
+            await Future<void>.delayed(const Duration(milliseconds: 300));
+          },
+          child: ListView.separated(
+            itemCount: list.length,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (_, i) {
+              final c = list[i];
+              return ListTile(
+                leading: CircleAvatar(
+                  radius: 16,
+                  child: Text(
+                    (c.shortSha ?? c.sha.substring(0, 7)).substring(0, 4),
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                ),
+                title: Text(c.message.split('\n').first, maxLines: 1, overflow: TextOverflow.ellipsis),
+                subtitle: Text('${c.authorName} - ${c.authoredAt.toLocal().toString().split('.').first}'),
+                onTap: () => context.push('/commit-detail/$repoId/${c.sha}'),
+              );
+            },
+          ),
+        );
+      },
+      loading: () => const Center(child: CircularProgressIndicator()),
+      error: (e, _) => Center(child: Text('${l.commonError}: $e')),
+    );
+  }
+}
+
+class _BranchesTab extends ConsumerWidget {
+  final String repoId;
+  const _BranchesTab({required this.repoId});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: ElevatedButton.icon(
+        icon: const Icon(Icons.account_tree),
+        label: const Text('Manage branches'),
+        onPressed: () => context.push('/branch/$repoId'),
+      ),
+    );
+  }
+}
+
+class _SyncBar extends StatelessWidget {
+  final RepoStatus status;
+  const _SyncBar({required this.status});
 
   @override
   Widget build(BuildContext context) {
-    final repo = ref.watch(currentRepoProvider);
-    final syncStatus = ref.watch(syncStatusProvider);
-
-    if (repo == null) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('仓库详情')),
-        body: const Center(child: Text('仓库未找到')),
-      );
-    }
-
-    final branches = ref.watch(branchesProvider(repo.localPath));
-    final log = ref.watch(logProvider(repo.localPath));
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(repo.name),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.folder_open),
-            onPressed: () {
-              context.push('/repo/${repo.id}/file?path=');
-            },
-            tooltip: '浏览文件',
-          ),
-          IconButton(
-            icon: const Icon(Icons.call_merge),
-            onPressed: () => _showMergeDialog(repo, branches),
-            tooltip: '合并',
-          ),
-          IconButton(
-            icon: const Icon(Icons.bar_chart),
-            onPressed: () => context.push('/repo/${repo.id}/stats'),
-            tooltip: '统计',
-          ),
-        ],
-        bottom: TabBar(
-          controller: _tabController,
-          tabs: const [
-            Tab(text: '文件'),
-            Tab(text: '提交'),
-            Tab(text: '分支'),
-          ],
-        ),
-      ),
-      body: Column(
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      color: Theme.of(context).colorScheme.surfaceContainerHigh,
+      child: Row(
         children: [
-          // Sync bar
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            color: Colors.grey[900],
-            child: Row(
-              children: [
-                _buildBranchChip(repo, branches),
-                const Spacer(),
-                if (syncStatus == SyncStatus.syncing)
-                  const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                else ...[
-                  IconButton(
-                    icon: const Icon(Icons.download, size: 20),
-                    onPressed: _pull,
-                    tooltip: '拉取',
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.upload, size: 20),
-                    onPressed: _push,
-                    tooltip: '推送',
-                  ),
-                ],
-              ],
+          const Icon(Icons.account_tree_outlined, size: 16),
+          const SizedBox(width: 4),
+          Text(status.branch, style: Theme.of(context).textTheme.labelLarge),
+          const SizedBox(width: 12),
+          if (status.aheadBy > 0) ...[
+            const Icon(Icons.arrow_upward, size: 14),
+            Text('$status.aheadBy', style: Theme.of(context).textTheme.bodySmall),
+            const SizedBox(width: 8),
+          ],
+          if (status.behindBy > 0) ...[
+            const Icon(Icons.arrow_downward, size: 14),
+            Text('$status.behindBy', style: Theme.of(context).textTheme.bodySmall),
+            const SizedBox(width: 8),
+          ],
+          const Spacer(),
+          if (status.hasConflicts)
+            const Chip(
+              label: Text('Conflicts'),
+              avatar: Icon(Icons.warning_amber, size: 16),
             ),
-          ),
-          // Tab content
-          Expanded(
-            child: TabBarView(
-              controller: _tabController,
-              children: [
-                _buildFilesTab(repo),
-                _buildLogTab(repo, log),
-                _buildBranchTab(repo, branches),
-              ],
-            ),
-          ),
         ],
       ),
     );
   }
+}
 
-  Widget _buildBranchChip(Repository repo, AsyncValue<List<GitBranch>> branches) {
-    return branches.when(
-      data: (list) {
-        final current = list.firstWhere(
-          (b) => b.isCurrent,
-          orElse: () => const GitBranch(name: 'main', type: BranchType.local),
-        );
-        return PopupMenuButton<GitBranch>(
-          child: Chip(
-            avatar: const Icon(Icons.call_split, size: 16),
-            label: Text(current.name, style: const TextStyle(fontSize: 12)),
-            backgroundColor: Colors.blueGrey[800],
-          ),
-          itemBuilder: (_) => list
-              .where((b) => b.type == BranchType.local)
-              .map((b) => PopupMenuItem(
-                    value: b,
-                    child: Row(
-                      children: [
-                        if (b.isCurrent)
-                          const Icon(Icons.check, size: 16, color: Colors.green)
-                        else
-                          const SizedBox(width: 16),
-                        const SizedBox(width: 8),
-                        Expanded(child: Text(b.name)),
-                      ],
-                    ),
-                  ))
-              .toList(),
-          onSelected: (b) async {
-            if (b.isCurrent) return;
-            try {
-              final git = ref.read(gitServiceProvider);
-              await git.checkout(repo.localPath, b.name);
-              ref.invalidate(branchesProvider(repo.localPath));
-              ref.invalidate(logProvider(repo.localPath));
-            } catch (e) {
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text('切换分支失败: $e')),
-                );
+class _SectionLabel extends StatelessWidget {
+  final String label;
+  const _SectionLabel({required this.label});
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+      child: Text(
+        label.toUpperCase(),
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: Theme.of(context).colorScheme.primary,
+              letterSpacing: 1.2,
+            ),
+      ),
+    );
+  }
+}
+
+class _FileChangeRow extends ConsumerWidget {
+  final String repoId;
+  final FileChange change;
+  final bool staged;
+  const _FileChangeRow({required this.repoId, required this.change, required this.staged});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return Slidable(
+      key: ValueKey(change.path),
+      startActionPane: ActionPane(
+        motion: const DrawerMotion(),
+        children: [
+          SlidableAction(
+            onPressed: (_) async {
+              final repo = await ref.read(_repoByIdProvider(repoId).future);
+              if (repo == null || !context.mounted) return;
+              if (staged) {
+                await ref.read(unstageFilesProvider).call(repo.localPath, [change.path]);
+              } else {
+                await ref.read(stageFilesProvider).call(repo.localPath, [change.path]);
               }
-            }
-          },
-        );
-      },
-      loading: () => Chip(
-        avatar: const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
-        label: const Text('...', style: TextStyle(fontSize: 12)),
-        backgroundColor: const Color(0xFF37474F),
+              ref.invalidate(_statusStreamProvider(repoId));
+              ref.invalidate(_diffProvider(repoId));
+            },
+            backgroundColor: staged ? Colors.orange : Colors.green,
+            foregroundColor: Colors.white,
+            icon: staged ? Icons.remove_circle_outline : Icons.add_circle_outline,
+            label: staged ? 'Unstage' : 'Stage',
+          ),
+        ],
       ),
-      error: (_, _) => Chip(
-        avatar: const Icon(Icons.error, size: 16),
-        label: const Text('错误', style: TextStyle(fontSize: 12)),
-        backgroundColor: Colors.red[800],
+      endActionPane: ActionPane(
+        motion: const DrawerMotion(),
+        children: [
+          SlidableAction(
+            onPressed: (_) async {
+              final confirm = await showDialog<bool>(
+                context: context,
+                builder: (_) => AlertDialog(
+                  title: const Text('Discard changes?'),
+                  content: Text('This will permanently discard local changes to ${change.path}.'),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+                    FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Discard')),
+                  ],
+                ),
+              );
+              if (confirm == true) {
+                final repo = await ref.read(_repoByIdProvider(repoId).future);
+                if (repo == null) return;
+                await ref.read(discardFilesProvider).call(repo.localPath, [change.path]);
+                ref.invalidate(_statusStreamProvider(repoId));
+                ref.invalidate(_diffProvider(repoId));
+              }
+            },
+            backgroundColor: Colors.red,
+            foregroundColor: Colors.white,
+            icon: Icons.delete_outline,
+            label: 'Discard',
+          ),
+        ],
+      ),
+      child: ListTile(
+        dense: true,
+        leading: Icon(_icon(change.status), color: _color(change.status), size: 18),
+        title: Text(change.path, maxLines: 1, overflow: TextOverflow.ellipsis),
+        trailing: Text(change.isStaged ? 'staged' : '', style: Theme.of(context).textTheme.bodySmall),
       ),
     );
   }
+}
 
-  Widget _buildFilesTab(Repository repo) {
-    return FileTreeWidget(
-      repo: repo,
-      onFileTap: (path) {
-        context.push('/repo/${repo.id}/file?path=${Uri.encodeComponent(path)}');
-      },
-    );
-  }
+IconData _icon(FileChangeStatus s) {
+  return switch (s) {
+    FileChangeStatus.added => Icons.add_circle_outline,
+    FileChangeStatus.modified => Icons.edit_outlined,
+    FileChangeStatus.deleted => Icons.delete_outline,
+    FileChangeStatus.renamed => Icons.drive_file_rename_outline,
+    FileChangeStatus.copied => Icons.copy_all_outlined,
+    FileChangeStatus.untracked => Icons.help_outline,
+    FileChangeStatus.conflicted => Icons.warning_amber_outlined,
+    FileChangeStatus.typeChanged => Icons.change_circle_outlined,
+  };
+}
 
-  Widget _buildLogTab(Repository repo, AsyncValue<List<GitCommit>> log) {
-    return log.when(
-      data: (commits) => ListView.builder(
-        itemCount: commits.length,
-        itemBuilder: (_, i) {
-          final c = commits[i];
-          return ListTile(
-            leading: CircleAvatar(
-              radius: 16,
-              backgroundColor: Colors.blueGrey[700],
-              child: Text(c.author[0].toUpperCase(), style: const TextStyle(fontSize: 12)),
-            ),
-            title: Text(c.message, maxLines: 1, overflow: TextOverflow.ellipsis),
-            subtitle: Text('${c.shortSha} · ${c.author} · ${_formatTime(c.timestamp)}'),
-            dense: true,
-            onTap: () => context.push('/repo/${repo.id}/commit/${c.shortSha}'),
-          );
-        },
-      ),
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (e, _) => Center(child: Text('加载失败: $e')),
-    );
-  }
-
-  Widget _buildBranchTab(Repository repo, AsyncValue<List<GitBranch>> branches) {
-    return branches.when(
-      data: (list) => ListView.builder(
-        itemCount: list.length,
-        itemBuilder: (_, i) {
-          final b = list[i];
-          return ListTile(
-            leading: Icon(
-              b.isCurrent ? Icons.check_circle : Icons.call_split,
-              color: b.isCurrent ? Colors.green : null,
-            ),
-            title: Text(b.name),
-            subtitle: Text(b.type == BranchType.remote ? '远程分支' : '本地分支'),
-            trailing: b.isCurrent ? null : PopupMenuButton<String>(
-              itemBuilder: (_) => [
-                const PopupMenuItem(value: 'checkout', child: Text('切换')),
-                const PopupMenuItem(value: 'delete', child: Text('删除')),
-              ],
-              onSelected: (v) async {
-                if (v == 'checkout') {
-                  await ref.read(gitServiceProvider).checkout(repo.localPath, b.name);
-                  ref.invalidate(branchesProvider(repo.localPath));
-                }
-              },
-            ),
-          );
-        },
-      ),
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (e, _) => Center(child: Text('加载失败: $e')),
-    );
-  }
-
-  String _formatTime(DateTime t) {
-    final diff = DateTime.now().difference(t);
-    if (diff.inMinutes < 60) return '${diff.inMinutes}分钟前';
-    if (diff.inHours < 24) return '${diff.inHours}小时前';
-    if (diff.inDays < 30) return '${diff.inDays}天前';
-    return '${t.month}/${t.day}';
-  }
+Color _color(FileChangeStatus s) {
+  return switch (s) {
+    FileChangeStatus.added => Colors.green,
+    FileChangeStatus.modified => Colors.orange,
+    FileChangeStatus.deleted => Colors.red,
+    FileChangeStatus.untracked => Colors.blueGrey,
+    FileChangeStatus.conflicted => Colors.red,
+    _ => Colors.grey,
+  };
 }

@@ -1,183 +1,100 @@
-# GitVex
+﻿# vex_git
 
-基于 Flutter 的移动端 Git 客户端，支持 GitHub & Gitee，采用纯 Dart 实现（git_on_dart）。
+> Mobile-first Git client for GitHub, built with Flutter.
 
-## 功能概览
+vex_git is a phone-shaped port of the GitHub Desktop experience. It targets
+individual developers who want a clean, focused Git workflow on Android and iOS
+without paying for GitHub Mobile or wrestling with a terminal app.
 
-### 仓库管理
+## Highlights
 
-- 新建本地仓库、克隆远程仓库、导入已有 Git 仓库
-- 仓库列表持久化（重启后保留）
-- 长按仓库 → 重命名 / 移除（仅解除绑定，不删文件）
-- 仓库级凭证绑定（vex/vex.config）
+- GitHub Device-Flow authentication (sign in with a one-time code, no PAT juggling)
+- Clone from URL, scan QR, or add an existing local repo
+- Working copy at a glance: staged / unstaged / untracked counts, ahead/behind
+- Stage, unstage, discard, and commit with author/email and GPG/SSH signing toggles
+- Branch, stash, fetch / pull / push, conflict resolution entry point
+- Pull request list, detail, and create flow backed by the GitHub REST API
+- History graph with diff viewer (line + word highlighting, swipe-to-dismiss)
+- Local-first configuration stored in `.vex_git.config` inside the project root;
+  cloned repos live in `.vex_git_store` next to it
+- Secrets (tokens, signing keys) go through `flutter_secure_storage` (Keychain /
+  Keystore / Windows Credential Manager)
 
-### 文件浏览
+## Architecture
 
-- 递归文件树展示，支持目录展开/折叠
-- 查看文件内容，支持代码高亮
-- 变更文件行级预览（带冲突标记高亮）
-
-### 提交管理
-
-- 变更文件勾选、填写提交信息、生成本地提交记录
-- 文件内容预览（底部弹窗，支持行号和冲突标记）
-
-### 提交历史
-
-- 查看提交日志，按时间倒序排列
-- 提交详情页展示 SHA、作者、邮箱、时间、父提交
-
-### 分支操作
-
-- 查看分支列表、切换分支、新建分支、删除分支
-- 合并分支（弹窗选择目标分支）
-
-### 拉取 / 推送
-
-- 一键拉取远端更新、推送本地提交至 origin
-- 拉取前置校验：检测未提交改动，提示暂存/强制拉取
-- 推送版本冲突检测：远程有新提交时弹窗提醒
-
-### 冲突处理
-
-- 冲突文件检测（扫描冲突标记）
-- 冲突可视化编辑页面（标记高亮，支持手动编辑保存）
-
-### 同步状态
-
-- 实时显示工作区变更文件数量，角标快速跳转提交页
-- 定时远程巡检（可配置周期：10/20/30 分钟，1 小时）
-- 检测到远程更新时推送通知
-
-### SSH 密钥
-
-- 自动检测 ~/.ssh 下的 RSA / Ed25519 公钥
-- 一键复制公钥，使用说明引导
-
-### 系统设置
-
-- 主题切换（深色 / 浅色 / 跟随系统）
-- 中英文语言支持（基础 i18n）
-- Token 管理（存储于 vex/vex.config）
-- 巡检周期配置
-- 缓存清除、恢复默认配置
-
-### 提交统计
-
-- 总提交数、贡献者数、近 7 天提交数
-- 贡献者排行（进度条可视化）
-- 最近 7 天提交趋势图
-
-## 快速开始
-
-### 环境要求
-
-- Flutter >= 3.41.9
-- Dart SDK >= 3.11.5
-
-### 运行
-
-```bash
-# 获取依赖
-flutter pub get
-
-# 运行调试版
-flutter run
-
-# 构建 APK
-flutter build apk --debug
-```
-
-## 配置文件
-
-凭证和密钥存储在 App 文档目录下的 `vex/vex.config`：
-
-```
-<app_doc_dir>/vex/vex.config
-```
-
-格式为 JSON：
-
-```json
-{
-  "github_token": "ghp_xxx",
-  "gitee_token": "xxx"
-}
-```
-
-## 项目结构
+Clean Architecture, three layers, unidirectional dependencies:
 
 ```
 lib/
-├── main.dart                          # 应用入口 & 路由配置
-├── l10n/
-│   └── app_localizations.dart         # 国际化
-├── domain/
-│   ├── entities/                      # 实体定义
-│   │   ├── repository.dart            # 仓库实体（含 token 字段）
-│   │   ├── git_commit.dart            # 提交实体
-│   │   ├── git_branch.dart            # 分支实体
-│   │   ├── file_change.dart           # 文件变更实体
-│   │   ├── git_platform.dart          # Git 平台枚举
-│   │   └── sync_status.dart           # 同步状态 & 异常类型
-│   └── services/
-│       └── git_service.dart           # Git 操作抽象接口
-├── infrastructure/
-│   └── git/
-│       └── git_on_dart_impl.dart      # git_on_dart 具体实现
-├── application/
-│   ├── providers/
-│   │   ├── git_providers.dart         # Git 状态管理
-│   │   └── settings_providers.dart    # 设置 & 凭证管理
-│   └── services/
-│       └── remote_scanner.dart        # 定时远程巡检
-├── presentation/
-│   ├── screens/
-│   │   ├── home_screen.dart           # 首页（仓库列表 + 汉堡菜单）
-│   │   ├── clone_screen.dart          # 克隆仓库
-│   │   ├── repo_detail_screen.dart    # 仓库详情（文件/提交/分支 Tab）
-│   │   ├── commit_screen.dart         # 提交编辑 + 文件预览
-│   │   ├── commit_detail_screen.dart  # 提交详情
-│   │   ├── file_viewer_screen.dart    # 文件/目录浏览
-│   │   ├── branch_screen.dart         # 分支管理
-│   │   ├── conflict_screen.dart       # 冲突可视化处理
-│   │   ├── stats_screen.dart          # 提交统计
-│   │   └── settings_screen.dart       # 系统设置
-│   └── widgets/
-│       └── file_tree_widget.dart      # 递归文件树组件
-└── core/
-    └── errors/
-        └── exceptions.dart            # 业务异常定义
+  domain/         # pure Dart: entities, repository interfaces, use cases
+  infrastructure/ # git CLI bridge, GitHub REST, secure storage, config repo
+  presentation/   # Riverpod providers, screens, widgets
+  app/            # theme, router, dependency wiring
+  core/           # errors, paths, constants, utilities
+  l10n/           # generated AppLocalizations (en, zh)
 ```
 
-## 技术栈
+- State management: Riverpod 2 (50+ providers, no `setState` for business state)
+- Error model: sealed `Result<T>` / `Failure` so the UI never sees a raw exception
+- Git I/O: `Process` against the system `git` binary (no libgit2 FFI, v1 keeps
+  things boring and debuggable)
+- Networking: `package:http` against the GitHub REST API
+- Routing: `go_router` with deep links
 
-| 包 | 用途 |
-|----|------|
-| git_on_dart | 纯 Dart Git 实现 |
-| flutter_riverpod | 状态管理 |
-| go_router | 声明式路由导航 |
-| path_provider | 应用目录路径 |
-| shared_preferences | 轻量配置存储 |
-| equatable | 实体相等性比较 |
-| intl | 日期格式化 |
-| flutter_localizations | 国际化支持 |
+## Getting Started
 
-## 页面路由
+### Prerequisites
 
-| 路径 | 页面 |
-|------|------|
-| `/` | 首页（仓库列表） |
-| `/clone` | 克隆仓库 |
-| `/repo/:id` | 仓库详情 |
-| `/repo/:id/commit` | 提交编辑 |
-| `/repo/:id/commit/:sha` | 提交详情 |
-| `/repo/:id/file?path=` | 文件浏览 |
-| `/repo/:id/branch` | 分支管理 |
-| `/repo/:id/conflict` | 冲突处理 |
-| `/repo/:id/stats` | 提交统计 |
-| `/settings` | 系统设置 |
+- Flutter 3.44+ (Dart 3.12+)
+- `git` available on `PATH`
+- For Android: Android Studio / cmdline-tools, an Android SDK image
+- For iOS: macOS with Xcode 15+
+
+### Run
+
+```bash
+flutter pub get
+flutter gen-l10n     # only needed if you edit lib/l10n/*.arb
+flutter run
+```
+
+### Test & Analyze
+
+```bash
+flutter analyze      # zero warnings expected
+flutter test         # 11 unit / smoke tests
+```
+
+### Build
+
+```bash
+flutter build apk --release
+flutter build appbundle
+flutter build ios --release      # macOS only
+```
+
+## Data Layout
+
+All user data lives inside the project root so a single folder is portable:
+
+| Path | Purpose |
+| --- | --- |
+| `.vex_git.config` | App config (accounts, repos, preferences) as JSON |
+| `.vex_git_store/` | Bare + working copies of cloned repositories |
+
+Both paths are configurable in Settings -> Storage. The defaults keep your
+secrets and code reviewable in version control if you so choose; in practice
+add `.vex_git.config` and `.vex_git_store/` to your global git ignore.
+
+Tokens and signing material are **never** written to `.vex_git.config`. They
+go through the OS secure store, keyed by account id.
+
+## Project Status
+
+This is a single-developer, single-repo build. Scope is "everything GitHub
+Desktop does, on a phone", minus the parts that only make sense on a desktop
+(window management, editor integration, GitHub Actions runners).
 
 ## License
 
-MIT
+Private project. All rights reserved.

@@ -1,13 +1,27 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import '../../application/providers/git_providers.dart';
-import '../../core/diff/diff_utils.dart';
-import '../../domain/entities/entities.dart';
+
+import '../../domain/entities/app_config.dart';
+import '../../domain/entities/git_entities.dart';
+import '../../domain/repositories/git_client.dart';
+import '../../l10n/app_localizations.dart';
+import '../providers/providers.dart';
+
+final _statusProvider = FutureProvider.family<RepoStatus, String>((ref, repoId) async {
+  final repo = await ref.read(appConfigRepoProvider).load();
+  final r = repo.repositories.firstWhere(
+    (e) => e.id == repoId,
+    orElse: () => RepoConfig(id: '', name: '', localPath: '', addedAt: DateTime.fromMillisecondsSinceEpoch(0)),
+  );
+  if (r.id.isEmpty || r.localPath.isEmpty) {
+    return const RepoStatus(branch: '');
+  }
+  return ref.read(getRepoStatusProvider).call(r.localPath);
+});
 
 class CommitScreen extends ConsumerStatefulWidget {
   final String repoId;
-
   const CommitScreen({super.key, required this.repoId});
 
   @override
@@ -15,377 +29,260 @@ class CommitScreen extends ConsumerStatefulWidget {
 }
 
 class _CommitScreenState extends ConsumerState<CommitScreen> {
-  final _titleController = TextEditingController();
-  final _bodyController = TextEditingController();
-  final Set<String> _selectedFiles = {};
-  bool _isCommitting = false;
+  final _messageCtrl = TextEditingController();
+  final _descriptionCtrl = TextEditingController();
+  final _coAuthorCtrl = TextEditingController();
+  bool _amend = false;
+  bool _signOff = false;
+  bool _busy = false;
+  String? _error;
+  final Set<String> _selected = {};
 
   @override
   void dispose() {
-    _titleController.dispose();
-    _bodyController.dispose();
+    _messageCtrl.dispose();
+    _descriptionCtrl.dispose();
+    _coAuthorCtrl.dispose();
     super.dispose();
   }
 
-  Future<void> _doCommit() async {
-    final title = _titleController.text.trim();
-    if (title.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请填写提交标题')),
-      );
+  Future<void> _commit() async {
+    final msg = _messageCtrl.text.trim();
+    if (msg.isEmpty) {
+      setState(() => _error = 'Commit message is required');
       return;
     }
-
-    if (_selectedFiles.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请选择要提交的文件')),
-      );
-      return;
-    }
-
-    final repo = ref.read(currentRepoProvider);
-    if (repo == null) return;
-
-    setState(() => _isCommitting = true);
-
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
     try {
-      final git = ref.read(gitServiceProvider);
-
-      // Stage selected files
-      await git.stage(repo.localPath, _selectedFiles.toList());
-
-      // Commit
-      final body = _bodyController.text.trim();
-      await git.commit(repo.localPath, title, body: body.isEmpty ? null : body);
-
-      // Invalidate providers to refresh
-      ref.invalidate(statusProvider(repo.localPath));
-      ref.invalidate(logProvider(repo.localPath));
-
+      final repo = await ref.read(appConfigRepoProvider).load();
+      final r = repo.repositories.firstWhere((e) => e.id == widget.repoId);
+      final coAuthors = _coAuthorCtrl.text
+          .split(RegExp(r'[\n,;]'))
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty)
+          .toList();
+      await ref.read(createCommitProvider).call(
+            r.localPath,
+            CommitOptions(
+              message: msg,
+              description: _descriptionCtrl.text.trim().isEmpty ? null : _descriptionCtrl.text.trim(),
+              amend: _amend,
+              signOff: _signOff,
+              coAuthors: coAuthors,
+            ),
+          );
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('提交成功')),
-        );
         context.pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Committed')),
+        );
       }
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('提交失败: $e')),
-        );
-      }
+      setState(() => _error = e.toString());
     } finally {
-      if (mounted) setState(() => _isCommitting = false);
+      if (mounted) setState(() => _busy = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final repo = ref.watch(currentRepoProvider);
-    if (repo == null) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('提交')),
-        body: const Center(child: Text('仓库未找到')),
-      );
-    }
-
-    final status = ref.watch(statusProvider(repo.localPath));
-
+    final l = AppLocalizations.of(context);
+    final async = ref.watch(_statusProvider(widget.repoId));
     return Scaffold(
       appBar: AppBar(
-        title: const Text('提交变更'),
+        title: Text(l.changesCommit),
         actions: [
           TextButton(
-            onPressed: _isCommitting ? null : _doCommit,
-            child: _isCommitting
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Text('提交'),
+            onPressed: _busy ? null : _commit,
+            child: Text(l.changesCommit),
           ),
         ],
       ),
-      body: Column(
-        children: [
-          // Commit message
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                TextField(
-                  controller: _titleController,
-                  decoration: const InputDecoration(
-                    labelText: '提交标题',
-                    hintText: '简短描述本次改动',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _bodyController,
-                  maxLines: 3,
-                  decoration: const InputDecoration(
-                    labelText: '详细说明（可选）',
-                    hintText: '补充更多细节...',
-                    border: OutlineInputBorder(),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const Divider(height: 1),
-          // File list
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Row(
-              children: [
-                Text(
-                  '变更文件 (${_selectedFiles.length})',
-                  style: Theme.of(context).textTheme.titleSmall,
-                ),
-                const Spacer(),
-                TextButton(
-                  onPressed: status.whenOrNull(
-                    data: (changes) => changes.isEmpty
-                        ? null
-                        : () => setState(() {
-                              _selectedFiles.clear();
-                              _selectedFiles.addAll(changes.map((c) => c.path));
-                            }),
-                  ),
-                  child: const Text('全选'),
-                ),
-                TextButton(
-                  onPressed: () {
-                    setState(() => _selectedFiles.clear());
-                  },
-                  child: const Text('清空'),
-                ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: status.when(
-              data: (changes) {
-                if (changes.isEmpty) {
-                  return const Center(
-                    child: Text('工作区干净，无变更', style: TextStyle(color: Colors.grey)),
-                  );
-                }
-                return ListView.builder(
-                  itemCount: changes.length,
-                  itemBuilder: (_, i) {
-                    final c = changes[i];
-                    final selected = _selectedFiles.contains(c.path);
-                    return ListTile(
-                      leading: Checkbox(
-                        value: selected,
-                        onChanged: (v) {
-                          setState(() {
-                            if (v == true) {
-                              _selectedFiles.add(c.path);
-                            } else {
-                              _selectedFiles.remove(c.path);
-                            }
-                          });
-                        },
+      body: async.when(
+        data: (status) {
+          final allChanges = [
+            ...status.staged,
+            ...status.unstaged,
+            ...status.untracked,
+          ];
+          return Column(
+            children: [
+              Expanded(
+                child: ListView(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  children: [
+                    if (allChanges.isNotEmpty) ...[
+                      _SectionHeader(
+                        title: '${l.changesStaged} (${status.staged.length}) / ${l.changesWorking} (${allChanges.length - status.staged.length})',
+                        actions: [
+                          TextButton.icon(
+                            onPressed: () {
+                              setState(() {
+                                if (_selected.length == allChanges.length) {
+                                  _selected.clear();
+                                } else {
+                                  _selected
+                                    ..clear()
+                                    ..addAll(allChanges.map((c) => c.path));
+                                }
+                              });
+                            },
+                            icon: Icon(_selected.length == allChanges.length
+                                ? Icons.deselect
+                                : Icons.select_all),
+                            label: Text(_selected.length == allChanges.length
+                                ? l.changesDeselectAll
+                                : l.changesSelectAll),
+                          ),
+                        ],
                       ),
-                      title: Text(c.path),
-                      subtitle: Text(c.status.name, style: TextStyle(
-                        color: _colorForStatus(c.status),
-                        fontSize: 11,
-                      )),
-                      trailing: Icon(_iconForStatus(c.status), color: _colorForStatus(c.status)),
-                      dense: true,
-                      onTap: () => _showFilePreview(c),
-                    );
-                  },
-                );
-              },
-              loading: () => const Center(child: CircularProgressIndicator()),
-              error: (e, _) => Center(child: Text('加载失败: $e')),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _showFilePreview(FileChange change) {
-    final repo = ref.read(currentRepoProvider);
-    if (repo == null) return;
-
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (_) => DraggableScrollableSheet(
-        initialChildSize: 0.7,
-        minChildSize: 0.3,
-        maxChildSize: 0.95,
-        expand: false,
-        builder: (_, controller) => Column(
-          children: [
-            // 顶部标题栏
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              child: Row(
-                children: [
-                  Icon(_iconForStatus(change.status), color: _colorForStatus(change.status), size: 18),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      change.path,
-                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                      for (final c in allChanges)
+                        CheckboxListTile(
+                          dense: true,
+                          value: c.isStaged || _selected.contains(c.path),
+                          onChanged: (v) {
+                            setState(() {
+                              if (v == true) {
+                                _selected.add(c.path);
+                              } else {
+                                _selected.remove(c.path);
+                              }
+                            });
+                          },
+                          title: Text(c.path, maxLines: 1, overflow: TextOverflow.ellipsis),
+                          subtitle: Text(_statusLabel(c.status, l), style: Theme.of(context).textTheme.bodySmall),
+                          secondary: Icon(_statusIcon(c.status), color: _statusColor(context, c.status)),
+                        ),
+                    ] else
+                      Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Center(child: Text(l.changesNoChanges)),
+                      ),
+                    const Divider(),
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          TextField(
+                            controller: _messageCtrl,
+                            maxLines: 3,
+                            minLines: 1,
+                            decoration: InputDecoration(labelText: l.changesCommitMessage),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _descriptionCtrl,
+                            maxLines: 4,
+                            minLines: 2,
+                            decoration: InputDecoration(labelText: l.changesCommitDescription),
+                          ),
+                          const SizedBox(height: 12),
+                          TextField(
+                            controller: _coAuthorCtrl,
+                            decoration: InputDecoration(
+                              labelText: l.changesCommitCoAuthor,
+                              hintText: 'name <email>',
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          CheckboxListTile(
+                            dense: true,
+                            value: _amend,
+                            onChanged: (v) => setState(() => _amend = v ?? false),
+                            title: Text(l.changesCommitAmend),
+                          ),
+                          CheckboxListTile(
+                            dense: true,
+                            value: _signOff,
+                            onChanged: (v) => setState(() => _signOff = v ?? false),
+                            title: const Text('Sign off (Signed-off-by)'),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                  Text(change.status.name, style: TextStyle(fontSize: 11, color: _colorForStatus(change.status))),
-                ],
+                  ],
+                ),
               ),
-            ),
-            const Divider(height: 1),
-            // Diff 内容
-            Expanded(
-              child: _DiffView(
-                repoPath: repo.localPath,
-                filePath: change.path,
-                controller: controller,
-              ),
-            ),
-          ],
-        ),
+              if (_error != null)
+                Container(
+                  width: double.infinity,
+                  color: Theme.of(context).colorScheme.errorContainer,
+                  padding: const EdgeInsets.all(12),
+                  child: Text(_error!),
+                ),
+            ],
+          );
+        },
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (e, _) => Center(child: Text('${l.commonError}: $e')),
       ),
     );
-  }
-
-  IconData _iconForStatus(ChangeStatus s) {
-    switch (s) {
-      case ChangeStatus.added:
-        return Icons.add_circle_outline;
-      case ChangeStatus.modified:
-        return Icons.edit;
-      case ChangeStatus.deleted:
-        return Icons.remove_circle_outline;
-      case ChangeStatus.renamed:
-        return Icons.drive_file_rename_outline;
-      case ChangeStatus.copied:
-        return Icons.copy;
-    }
-  }
-
-  Color _colorForStatus(ChangeStatus s) {
-    switch (s) {
-      case ChangeStatus.added:
-        return Colors.green;
-      case ChangeStatus.modified:
-        return Colors.orange;
-      case ChangeStatus.deleted:
-        return Colors.red;
-      case ChangeStatus.renamed:
-        return Colors.blue;
-      case ChangeStatus.copied:
-        return Colors.purple;
-    }
   }
 }
 
-class _DiffView extends ConsumerWidget {
-  final String repoPath;
-  final String filePath;
-  final ScrollController? controller;
-
-  const _DiffView({
-    required this.repoPath,
-    required this.filePath,
-    this.controller,
-  });
-
+class _SectionHeader extends StatelessWidget {
+  final String title;
+  final List<Widget> actions;
+  const _SectionHeader({required this.title, this.actions = const []});
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final diffAsync = ref.watch(diffProvider((repoPath: repoPath, filePath: filePath)));
-
-    return diffAsync.when(
-      data: (lines) {
-        if (lines.isEmpty) {
-          return const Center(
-            child: Text('无差异', style: TextStyle(color: Colors.grey)),
-          );
-        }
-        return ListView.builder(
-          controller: controller,
-          itemCount: lines.length,
-          itemBuilder: (_, i) {
-            final line = lines[i];
-            final bgColor = switch (line.type) {
-              DiffType.added => Colors.green.withValues(alpha: 0.15),
-              DiffType.removed => Colors.red.withValues(alpha: 0.15),
-              DiffType.context => null,
-            };
-            final prefix = switch (line.type) {
-              DiffType.added => '+',
-              DiffType.removed => '-',
-              DiffType.context => ' ',
-            };
-            final lineNo = switch (line.type) {
-              DiffType.added => line.newLineNo,
-              DiffType.removed => line.oldLineNo,
-              DiffType.context => line.oldLineNo,
-            };
-            final textColor = switch (line.type) {
-              DiffType.added => Colors.green[300],
-              DiffType.removed => Colors.red[300],
-              DiffType.context => Colors.grey[400],
-            };
-
-            return Container(
-              color: bgColor,
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // 行号
-                  SizedBox(
-                    width: 28,
-                    child: Text(
-                      '$lineNo',
-                      style: TextStyle(fontSize: 10, color: Colors.grey[600]),
-                      textAlign: TextAlign.right,
-                    ),
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title.toUpperCase(),
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: Theme.of(context).colorScheme.primary,
+                    letterSpacing: 1.2,
                   ),
-                  const SizedBox(width: 4),
-                  // +/- 标记
-                  SizedBox(
-                    width: 14,
-                    child: Text(
-                      prefix,
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.bold,
-                        color: textColor,
-                      ),
-                    ),
-                  ),
-                  // 内容
-                  Expanded(
-                    child: Text(
-                      line.content,
-                      style: TextStyle(
-                        fontFamily: 'monospace',
-                        fontSize: 12,
-                        height: 1.5,
-                        color: textColor,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            );
-          },
-        );
-      },
-      loading: () => const Center(child: CircularProgressIndicator()),
-      error: (e, _) => Center(child: Text('加载失败: $e')),
+            ),
+          ),
+          ...actions,
+        ],
+      ),
     );
   }
+}
+
+String _statusLabel(FileChangeStatus s, AppLocalizations l) {
+  return switch (s) {
+    FileChangeStatus.added => 'A',
+    FileChangeStatus.modified => 'M',
+    FileChangeStatus.deleted => 'D',
+    FileChangeStatus.renamed => 'R',
+    FileChangeStatus.copied => 'C',
+    FileChangeStatus.untracked => '?',
+    FileChangeStatus.conflicted => '!',
+    FileChangeStatus.typeChanged => 'T',
+  };
+}
+
+IconData _statusIcon(FileChangeStatus s) {
+  return switch (s) {
+    FileChangeStatus.added => Icons.add_circle_outline,
+    FileChangeStatus.modified => Icons.edit_outlined,
+    FileChangeStatus.deleted => Icons.delete_outline,
+    FileChangeStatus.renamed => Icons.drive_file_rename_outline,
+    FileChangeStatus.copied => Icons.copy_all_outlined,
+    FileChangeStatus.untracked => Icons.help_outline,
+    FileChangeStatus.conflicted => Icons.warning_amber_outlined,
+    FileChangeStatus.typeChanged => Icons.change_circle_outlined,
+  };
+}
+
+Color _statusColor(BuildContext context, FileChangeStatus s) {
+  return switch (s) {
+    FileChangeStatus.added => Colors.green,
+    FileChangeStatus.modified => Colors.orange,
+    FileChangeStatus.deleted => Colors.red,
+    FileChangeStatus.untracked => Colors.blueGrey,
+    FileChangeStatus.conflicted => Colors.red,
+    _ => Theme.of(context).colorScheme.outline,
+  };
 }

@@ -1,38 +1,86 @@
-# Built application
-build/
-*.apk
-*.aab
-*.ipa
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+.swiftpm/
+migrate_working_dir/
 
-# Flutter/Dart
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# VS Code
+.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
 .dart_tool/
 .flutter-plugins
 .flutter-plugins-dependencies
 .packages
 .pub-cache/
 .pub/
+/build/
+/coverage/
+.fvm/
 
-# Android
-android/.gradle/
-android/app/build/
-android/.idea/
-android/local.properties
+# Symbolication related
+app.*.symbols
 
-# iOS
-ios/Pods/
-ios/.symlinks/
-ios/build/
+# Obfuscation related
+app.*.map.json
 
-# IDE
-.idea/
-*.iml
-.vscode/
-*.swp
+# Android Studio/Gradle build artifacts
+/android/.gradle/
+/android/app/build/
+/android/build/
+/android/app/debug/
+/android/app/profile/
+/android/app/release/
+*.hprof
+*.jks
+*.keystore
+local.properties
 
-# OS
-.DS_Store
-Thumbs.db
+# iOS build artifacts
+/ios/Pods/
+/ios/.symlinks/
+/ios/Flutter/Flutter.framework
+/ios/Flutter/Flutter.podspec
+/ios/Flutter/ServiceDefinitions.json
+/ios/Runner/Runner.entitlements
+/ios/Runner/Runner.ipa
 
-# Local config (credentials - DO NOT commit)
-*.local
-.env
+# macOS build artifacts
+/macos/Flutter/Flutter-Debug.xcframework
+/macos/Flutter/Flutter-Release.xcframework
+/macos/.symlinks/
+/macos/Pods/
+/macos/build/
+
+# Windows build artifacts
+/windows/build/
+/windows/runner/Resources/
+
+# Linux build artifacts
+/linux/build/
+/linux/flutter/ephemeral/
+
+# Web build artifacts
+/web/build/
+/web/flutter_bootstrap.js
+/web/flutter_service_worker.js
+
+# Test coverage
+lcov.info
+coverage/lcov.info

@@ -1,10 +1,11 @@
-name: vex_git
-description: "VexGit - Git client for GitHub & Gitee"
+﻿name: vex_git
+description: "Vex Git - A mobile-first Git client inspired by GitHub Desktop"
 publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.11.5
+  sdk: ^3.12.0
+  flutter: ">=3.44.0"
 
 dependencies:
   flutter:
@@ -13,33 +14,56 @@ dependencies:
     sdk: flutter
   cupertino_icons: ^1.0.8
 
-  # Git operations - pure Dart implementation
-  git_on_dart: ^0.1.4
-
   # State management
   flutter_riverpod: ^2.6.1
-  riverpod_annotation: ^2.6.1
 
   # Navigation
   go_router: ^14.8.1
 
-  # UI & Utils
+  # HTTP & API
+  dio: ^5.7.0
+
+  # Storage
+  flutter_secure_storage: ^9.2.2
+  shared_preferences: ^2.3.2
+  sqflite: ^2.4.1
   path_provider: ^2.1.5
+
+  # Utilities
   path: ^1.9.0
   url_launcher: ^6.3.1
-  shared_preferences: ^2.5.3
-  equatable: ^2.0.7
   intl: ^0.20.2
+  equatable: ^2.0.7
+  collection: ^1.18.0
+
+  # UI helpers
+  flutter_slidable: ^3.1.2
+  shimmer: ^3.0.0
+  cached_network_image: ^3.4.1
+  mobile_scanner: ^5.2.3
+  qr_flutter: ^4.1.0
+  share_plus: ^10.0.2
+  local_auth: ^2.3.0
+  flutter_local_notifications: ^17.2.3
+  package_info_plus: ^8.0.2
 
   # Error handling & logging
-  talker: ^4.1.2
+  talker: ^4.9.3
+  logger: ^2.5.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  flutter_lints: ^6.0.0
-  riverpod_generator: ^2.6.4
-  build_runner: ^2.4.15
+  flutter_lints: ^5.0.0
+  build_runner: ^2.4.13
+  mocktail: ^1.0.4
+  path_provider_platform_interface: ^2.1.2
+  plugin_platform_interface: ^2.1.8
 
 flutter:
   uses-material-design: true
+  generate: true
+  assets:
+    - assets/
+    - assets/icons/app_icon.png
+

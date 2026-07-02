@@ -1,24 +1,16 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import '../../application/providers/git_providers.dart';
-import '../../domain/entities/entities.dart';
-import 'package:path_provider/path_provider.dart';
-import 'dart:async';
-import 'dart:io';
 
-/// 每 30 秒轮询一次变更数量，实现实时监测
-final changeCountProvider = StreamProvider.family<int, String>((ref, localPath) async* {
-  final git = ref.read(gitServiceProvider);
-  // 初始加载
-  final initial = await git.getStatus(localPath);
-  yield initial.length;
-  // 每 30 秒轮询
-  await for (final _ in Stream.periodic(const Duration(seconds: 30))) {
-    try {
-      final changes = await git.getStatus(localPath);
-      yield changes.length;
-    } catch (_) {}
+import '../../core/constants/app_constants.dart';
+import '../../domain/entities/app_config.dart';
+import '../../l10n/app_localizations.dart';
+import '../providers/providers.dart';
+
+final _reposProvider = StreamProvider<List<RepoConfig>>((ref) async* {
+  final repo = ref.watch(appConfigRepoProvider);
+  await for (final cfg in repo.watch()) {
+    yield cfg.repositories;
   }
 });
 
@@ -27,208 +19,181 @@ class HomeScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final reposAsync = ref.watch(repositoriesProvider);
-    final currentRepo = ref.watch(currentRepoProvider);
-
+    final l = AppLocalizations.of(context);
+    final repos = ref.watch(_reposProvider);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('GitVex'),
+        title: Text(l.repoListTitle),
         actions: [
-          if (currentRepo != null)
-            _ChangeBadge(repo: currentRepo),
+          IconButton(
+            icon: const Icon(Icons.settings_outlined),
+            tooltip: l.settingsTitle,
+            onPressed: () => context.push(AppRoutes.settings),
+          ),
         ],
       ),
-      drawer: _buildDrawer(context, ref),
-      body: reposAsync.when(
-        data: (repos) => repos.isEmpty
-            ? Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.source, size: 64, color: Colors.grey[600]),
-                    const SizedBox(height: 16),
-                    const Text('暂无仓库', style: TextStyle(color: Colors.grey)),
-                    const SizedBox(height: 8),
-                    const Text(
-                      '点击右上角 + 克隆或新建仓库',
-                      style: TextStyle(color: Colors.grey, fontSize: 12),
-                    ),
-                  ],
-                ),
-              )
-            : ListView.builder(
-                itemCount: repos.length,
-                itemBuilder: (_, i) {
-                  final repo = repos[i];
-                  final isSelected = currentRepo?.id == repo.id;
-                  return ListTile(
-                    selected: isSelected,
-                    leading: Icon(
-                      isSelected ? Icons.folder_open : Icons.folder,
-                      color: isSelected ? Colors.blue : null,
-                    ),
-                    title: Text(repo.name),
-                    subtitle: Text(
-                      repo.remoteUrl ?? repo.localPath,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 11),
-                    ),
-                    onTap: () {
-                      ref.read(currentRepoProvider.notifier).state = repo;
-                      context.push('/repo/${repo.id}');
-                    },
-                    onLongPress: () => _showRepoOptions(context, ref, repo),
-                  );
-                },
-              ),
+      drawer: const HomeDrawer(),
+      body: repos.when(
+        data: (list) {
+          if (list.isEmpty) {
+            return _EmptyState();
+          }
+          return RefreshIndicator(
+            onRefresh: () async {
+              ref.invalidate(_reposProvider);
+              await Future<void>.delayed(const Duration(milliseconds: 300));
+            },
+            child: ListView.separated(
+              padding: const EdgeInsets.all(12),
+              itemCount: list.length,
+              separatorBuilder: (_, __) => const SizedBox(height: 8),
+              itemBuilder: (_, i) => _RepoCard(repo: list[i]),
+            ),
+          );
+        },
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('错误: $e')),
+        error: (e, _) => Center(child: Text('${l.commonError}: $e')),
       ),
-      floatingActionButton: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          FloatingActionButton(
-            heroTag: 'clone',
-            onPressed: () => context.push('/clone'),
-            child: const Icon(Icons.download),
-          ),
-          const SizedBox(height: 12),
-          FloatingActionButton(
-            heroTag: 'import',
-            onPressed: () => _importLocalRepo(context, ref),
-            child: const Icon(Icons.folder_open),
-          ),
-        ],
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => _showAddSheet(context),
+        icon: const Icon(Icons.add),
+        label: Text(l.repoAdd),
       ),
     );
   }
 
-  Widget _buildDrawer(BuildContext context, WidgetRef ref) {
-    return Drawer(
-      child: ListView(
-        children: [
-          DrawerHeader(
-            decoration: BoxDecoration(
-              color: Colors.blueGrey[800],
-            ),
-            child: const Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                Icon(Icons.source, size: 40, color: Colors.white),
-                SizedBox(height: 8),
-                Text('GitVex', style: TextStyle(fontSize: 20, color: Colors.white)),
-                Text('Flutter Git 客户端', style: TextStyle(fontSize: 12, color: Colors.white70)),
-              ],
-            ),
-          ),
-          _drawerSection('仓库项目', [
-            ListTile(
-              leading: const Icon(Icons.folder),
-              title: const Text('仓库列表'),
-              onTap: () => Navigator.pop(context),
-            ),
-            ListTile(
-              leading: const Icon(Icons.add),
-              title: const Text('新建仓库'),
-              onTap: () {
-                Navigator.pop(context);
-                _createRepo(context, ref);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.download),
-              title: const Text('克隆仓库'),
-              onTap: () {
-                Navigator.pop(context);
-                context.push('/clone');
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.folder_open),
-              title: const Text('导入本地仓库'),
-              onTap: () {
-                Navigator.pop(context);
-                _importLocalRepo(context, ref);
-              },
-            ),
-          ]),
-          _drawerSection('分支快捷入口', [
-            ListTile(
-              leading: const Icon(Icons.call_split),
-              title: const Text('切换分支'),
-              onTap: () {
-                Navigator.pop(context);
-                final repo = ref.read(currentRepoProvider);
-                if (repo != null) {
-                  context.push('/repo/${repo.id}/branch');
-                } else {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('请先选择一个仓库')),
-                  );
-                }
-              },
-            ),
-          ]),
-          _drawerSection('系统设置', [
-            ListTile(
-              leading: const Icon(Icons.settings),
-              title: const Text('设置'),
-              trailing: const Icon(Icons.chevron_right),
-              onTap: () {
-                Navigator.pop(context);
-                context.push('/settings');
-              },
-            ),
-          ]),
-        ],
-      ),
-    );
-  }
-
-  void _showRepoOptions(BuildContext context, WidgetRef ref, Repository repo) {
-    showModalBottomSheet(
+  void _showAddSheet(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    showModalBottomSheet<void>(
       context: context,
       builder: (_) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.edit),
-              title: const Text('重命名'),
+              leading: const Icon(Icons.cloud_download_outlined),
+              title: Text(l.repoClone),
               onTap: () {
                 Navigator.pop(context);
-                _renameRepo(context, ref, repo);
+                context.push(AppRoutes.clone);
               },
             ),
             ListTile(
-              leading: const Icon(Icons.delete, color: Colors.red),
-              title: const Text('移除仓库', style: TextStyle(color: Colors.red)),
+              leading: const Icon(Icons.create_new_folder_outlined),
+              title: Text(l.repoCreate),
+              onTap: () {
+                Navigator.pop(context);
+                context.push(AppRoutes.create);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.folder_open),
+              title: Text(l.repoAddExisting),
+              onTap: () {
+                Navigator.pop(context);
+                context.push(AppRoutes.addLocal);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.qr_code_scanner),
+              title: const Text('Scan to clone'),
+              onTap: () {
+                Navigator.pop(context);
+                context.push(AppRoutes.scan);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class HomeDrawer extends ConsumerWidget {
+  const HomeDrawer({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l = AppLocalizations.of(context);
+    final cfg = ref.watch(configStreamProvider).value;
+    final activeId = cfg?.activeAccountId;
+    final account = _findAccount(cfg, activeId);
+    return Drawer(
+      child: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(20),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 24,
+                    backgroundImage: (account != null && account.avatarUrl != null && account.avatarUrl!.isNotEmpty)
+                        ? NetworkImage(account.avatarUrl!)
+                        : null,
+                    child: (account == null || account.avatarUrl == null || account.avatarUrl!.isEmpty)
+                        ? const Icon(Icons.person)
+                        : null,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          account?.displayName ?? account?.login ?? 'Vex Git',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        Text(
+                          '@${account?.login ?? "Not signed in"}',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(),
+            ListTile(
+              leading: const Icon(Icons.home_outlined),
+              title: Text(l.navHome),
+              onTap: () => Navigator.pop(context),
+            ),
+            ListTile(
+              leading: const Icon(Icons.credit_card_outlined),
+              title: Text(l.credentialsTitle),
+              onTap: () {
+                Navigator.pop(context);
+                context.push(AppRoutes.credentials);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.settings_outlined),
+              title: Text(l.settingsTitle),
+              onTap: () {
+                Navigator.pop(context);
+                context.push(AppRoutes.settings);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.info_outline),
+              title: Text(l.settingsAbout),
+              onTap: () {
+                Navigator.pop(context);
+                context.push(AppRoutes.about);
+              },
+            ),
+            const Spacer(),
+            ListTile(
+              leading: const Icon(Icons.logout),
+              title: Text(l.authLogout),
               onTap: () async {
                 Navigator.pop(context);
-                final confirm = await showDialog<bool>(
-                  context: context,
-                  builder: (_) => AlertDialog(
-                    title: const Text('确认移除'),
-                    content: Text('确定从列表中移除「${repo.name}」？\n本地文件不会被删除。'),
-                    actions: [
-                      TextButton(
-                        onPressed: () => Navigator.pop(context, false),
-                        child: const Text('取消'),
-                      ),
-                      TextButton(
-                        onPressed: () => Navigator.pop(context, true),
-                        child: const Text('移除', style: TextStyle(color: Colors.red)),
-                      ),
-                    ],
-                  ),
-                );
-                if (confirm == true) {
-                  ref.read(repositoriesProvider.notifier).removeRepo(repo.id);
-                  if (ref.read(currentRepoProvider)?.id == repo.id) {
-                    ref.read(currentRepoProvider.notifier).state = null;
-                  }
+                if (activeId != null) {
+                  await ref.read(logoutUseCaseProvider).call(activeId);
+                  if (context.mounted) context.go(AppRoutes.auth);
                 }
               },
             ),
@@ -238,273 +203,123 @@ class HomeScreen extends ConsumerWidget {
     );
   }
 
-  void _renameRepo(BuildContext context, WidgetRef ref, Repository repo) {
-    final controller = TextEditingController(text: repo.name);
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('重命名仓库'),
-        content: TextField(
-          controller: controller,
-          decoration: const InputDecoration(
-            labelText: '仓库名',
-            border: OutlineInputBorder(),
-          ),
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () {
-              final name = controller.text.trim();
-              if (name.isNotEmpty) {
-                ref.read(repositoriesProvider.notifier).renameRepo(repo.id, name);
-                if (ref.read(currentRepoProvider)?.id == repo.id) {
-                  final updated = Repository(
-                    id: repo.id,
-                    name: name,
-                    description: repo.description,
-                    localPath: repo.localPath,
-                    remoteUrl: repo.remoteUrl,
-                    platform: repo.platform,
-                    defaultBranch: repo.defaultBranch,
-                    createdAt: repo.createdAt,
-                  );
-                  ref.read(currentRepoProvider.notifier).state = updated;
-                }
-              }
-              Navigator.pop(context);
-            },
-            child: const Text('确认'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _drawerSection(String title, List<Widget> children) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-          child: Text(title, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-        ),
-        ...children,
-        const Divider(),
-      ],
-    );
-  }
-
-  Future<void> _importLocalRepo(BuildContext context, WidgetRef ref) async {
-    final appDir = await getApplicationDocumentsDirectory();
-    final reposDir = Directory('${appDir.path}/repos');
-
-    if (!await reposDir.exists()) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('本地无仓库，请先克隆')),
-        );
-      }
-      return;
-    }
-
-    try {
-      final entities = await reposDir.list().toList();
-      final repoDirs = <Directory>[];
-
-      for (final entity in entities) {
-        if (entity is Directory) {
-          final gitDir = Directory('${entity.path}/.git');
-          if (await gitDir.exists()) {
-            repoDirs.add(entity);
-          }
-        }
-      }
-
-      if (context.mounted) {
-        if (repoDirs.isEmpty) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('未找到本地 Git 仓库')),
-          );
-          return;
-        }
-
-        final selected = await showDialog<Directory>(
-          context: context,
-          builder: (_) => AlertDialog(
-            title: const Text('选择仓库'),
-            content: SizedBox(
-              width: double.maxFinite,
-              height: 300,
-              child: ListView.builder(
-                itemCount: repoDirs.length,
-                itemBuilder: (_, i) {
-                  final dir = repoDirs[i];
-                  final name = dir.path.split('/').last;
-                  return ListTile(
-                    title: Text(name),
-                    subtitle: Text(dir.path, style: const TextStyle(fontSize: 10)),
-                    onTap: () => Navigator.pop(context, dir),
-                  );
-                },
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('取消'),
-              ),
-            ],
-          ),
-        );
-
-        if (selected != null) {
-          await _addRepoFromDir(context, ref, selected);
-        }
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('导入失败: $e')),
-        );
-      }
-    }
-  }
-
-  Future<void> _addRepoFromDir(BuildContext context, WidgetRef ref, Directory dir) async {
-    final name = dir.path.split('/').last;
-    final repo = Repository(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
-      name: name,
-      localPath: dir.path,
-      platform: GitPlatform.unknown,
-      defaultBranch: 'main',
-      createdAt: DateTime.now(),
-    );
-
-    ref.read(repositoriesProvider.notifier).addRepo(repo);
-    ref.read(currentRepoProvider.notifier).state = repo;
-
-    if (context.mounted) {
-      context.push('/repo/${repo.id}');
-    }
-  }
-
-  Future<void> _createRepo(BuildContext context, WidgetRef ref) async {
-    final nameController = TextEditingController();
-    final pathController = TextEditingController();
-
-    final appDir = await getApplicationDocumentsDirectory();
-    pathController.text = '${appDir.path}/repos/';
-
-    final name = await showDialog<String>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('新建仓库'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: nameController,
-              decoration: const InputDecoration(
-                labelText: '仓库名',
-                border: OutlineInputBorder(),
-              ),
-              autofocus: true,
-            ),
-            const SizedBox(height: 12),
-            TextField(
-              controller: pathController,
-              decoration: const InputDecoration(
-                labelText: '本地路径',
-                border: OutlineInputBorder(),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, nameController.text.trim()),
-            child: const Text('创建'),
-          ),
-        ],
-      ),
-    );
-
-    if (name != null && name.isNotEmpty) {
-      try {
-        final git = ref.read(gitServiceProvider);
-        final localPath = '${pathController.text}/$name';
-        await Directory(localPath).create(recursive: true);
-        await git.init(localPath);
-
-        final repo = Repository(
-          id: DateTime.now().millisecondsSinceEpoch.toString(),
-          name: name,
-          localPath: localPath,
-          platform: GitPlatform.unknown,
-          defaultBranch: 'main',
-          createdAt: DateTime.now(),
-        );
-
-        ref.read(repositoriesProvider.notifier).addRepo(repo);
-        ref.read(currentRepoProvider.notifier).state = repo;
-
-        if (context.mounted) {
-          context.push('/repo/${repo.id}');
-        }
-      } catch (e) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('创建失败: $e')),
-          );
-        }
-      }
-    }
+  AccountConfig? _findAccount(AppConfig? cfg, String? activeId) {
+    if (cfg == null || activeId == null) return null;
+    final matches = cfg.accounts.where((a) => a.id == activeId);
+    return matches.isNotEmpty ? matches.first : null;
   }
 }
 
-class _ChangeBadge extends ConsumerWidget {
-  final Repository repo;
+class _EmptyState extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.folder_open, size: 64, color: Theme.of(context).colorScheme.outline),
+            const SizedBox(height: 16),
+            Text(l.repoNoRepos, style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Text(l.repoNoReposHint,
+                style: Theme.of(context).textTheme.bodySmall, textAlign: TextAlign.center),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
-  const _ChangeBadge({required this.repo});
+class _RepoCard extends StatelessWidget {
+  final RepoConfig repo;
+  const _RepoCard({required this.repo});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final countAsync = ref.watch(changeCountProvider(repo.localPath));
-
-    return countAsync.when(
-      data: (count) {
-        if (count == 0) return const SizedBox.shrink();
-        return Padding(
-          padding: const EdgeInsets.only(right: 8),
-          child: InkWell(
-            onTap: () => context.push('/repo/${repo.id}/commit'),
-            borderRadius: BorderRadius.circular(12),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: Colors.orange,
-                borderRadius: BorderRadius.circular(12),
+  Widget build(BuildContext context) {
+    return Card(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => context.push('/repo/${repo.id}'),
+        onLongPress: () => _showMore(context),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.book_outlined, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(repo.name,
+                        style: Theme.of(context).textTheme.titleMedium,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis),
+                  ),
+                ],
               ),
-              child: Text(
-                '$count',
-                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+              if (repo.remoteUrl != null) ...[
+                const SizedBox(height: 4),
+                Text(repo.remoteUrl!,
+                    style: Theme.of(context).textTheme.bodySmall,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+              ],
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  if (repo.defaultBranch != null) ...[
+                    const Icon(Icons.account_tree_outlined, size: 14),
+                    const SizedBox(width: 4),
+                    Text(repo.defaultBranch!, style: Theme.of(context).textTheme.bodySmall),
+                    const SizedBox(width: 12),
+                  ],
+                  const Icon(Icons.folder_outlined, size: 14),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(repo.localPath,
+                        style: Theme.of(context).textTheme.bodySmall,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis),
+                  ),
+                ],
               ),
-            ),
+            ],
           ),
-        );
-      },
-      loading: () => const SizedBox.shrink(),
-      error: (_, _) => const SizedBox.shrink(),
+        ),
+      ),
+    );
+  }
+
+  void _showMore(BuildContext context) {
+    final l = AppLocalizations.of(context);
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.drive_file_rename_outline),
+              title: Text(l.repoRename),
+              onTap: () => Navigator.pop(context),
+            ),
+            ListTile(
+              leading: const Icon(Icons.folder_open),
+              title: Text(l.repoSetPath),
+              onTap: () => Navigator.pop(context),
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: Text(l.repoRemove),
+              onTap: () => Navigator.pop(context),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

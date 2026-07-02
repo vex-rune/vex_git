@@ -1,233 +1,199 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../application/providers/git_providers.dart';
-import '../../domain/entities/entities.dart';
 
-class BranchScreen extends ConsumerStatefulWidget {
+import '../../domain/entities/app_config.dart';
+import '../../domain/entities/git_entities.dart';
+import '../../l10n/app_localizations.dart';
+import '../providers/providers.dart';
+
+final _branchesProvider = FutureProvider.family<List<Branch>, String>((ref, repoId) async {
+  final repo = await ref.read(appConfigRepoProvider).load();
+  final r = repo.repositories.firstWhere(
+    (e) => e.id == repoId,
+    orElse: () => RepoConfig(id: '', name: '', localPath: '', addedAt: DateTime.fromMillisecondsSinceEpoch(0)),
+  );
+  if (r.id.isEmpty || r.localPath.isEmpty) return const [];
+  return ref.read(listBranchesProvider).call(r.localPath);
+});
+
+class BranchScreen extends ConsumerWidget {
   final String repoId;
-
   const BranchScreen({super.key, required this.repoId});
 
   @override
-  ConsumerState<BranchScreen> createState() => _BranchScreenState();
-}
-
-class _BranchScreenState extends ConsumerState<BranchScreen> {
-  final _newBranchController = TextEditingController();
-
-  @override
-  void dispose() {
-    _newBranchController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _createBranch() async {
-    final name = _newBranchController.text.trim();
-    if (name.isEmpty) return;
-
-    final repo = ref.read(currentRepoProvider);
-    if (repo == null) return;
-
-    try {
-      final git = ref.read(gitServiceProvider);
-      await git.createBranch(repo.localPath, name);
-      ref.invalidate(branchesProvider(repo.localPath));
-      ref.invalidate(statusProvider(repo.localPath));
-      _newBranchController.clear();
-      if (mounted) Navigator.pop(context);
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('创建分支失败: $e')),
-        );
-      }
-    }
-  }
-
-  Future<void> _deleteBranch(GitBranch branch) async {
-    if (branch.name == 'main' || branch.name == 'master') {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('不能删除主干分支')),
-      );
-      return;
-    }
-
-    final repo = ref.read(currentRepoProvider);
-    if (repo == null) return;
-
-    try {
-      final git = ref.read(gitServiceProvider);
-      await git.deleteBranch(repo.localPath, branch.name);
-      ref.invalidate(branchesProvider(repo.localPath));
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('删除失败: $e')),
-        );
-      }
-    }
-  }
-
-  Future<void> _checkoutBranch(GitBranch branch) async {
-    final repo = ref.read(currentRepoProvider);
-    if (repo == null) return;
-
-    // 检测未提交改动
-    final git = ref.read(gitServiceProvider);
-    final changes = await git.getStatus(repo.localPath);
-    if (changes.isNotEmpty && mounted) {
-      final action = await showDialog<String>(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text('存在未提交的改动'),
-          content: Text('当前有 ${changes.length} 个文件未提交，切换分支可能导致改动丢失。\n\n建议先提交或暂存改动。'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'cancel'),
-              child: const Text('取消'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'discard'),
-              child: const Text('放弃改动并切换', style: TextStyle(color: Colors.red)),
-            ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, 'stash'),
-              child: const Text('暂存后切换'),
-            ),
-          ],
-        ),
-      );
-      if (action == 'cancel' || action == null) return;
-      if (action == 'stash') {
-        await git.stage(repo.localPath, changes.map((c) => c.path).toList());
-      }
-    }
-
-    try {
-      await git.checkout(repo.localPath, branch.name);
-      ref.invalidate(branchesProvider(repo.localPath));
-      ref.invalidate(statusProvider(repo.localPath));
-      ref.invalidate(logProvider(repo.localPath));
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('切换分支失败: $e')),
-        );
-      }
-    }
-  }
-
-  void _showCreateDialog() {
-    showDialog(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('新建分支'),
-        content: TextField(
-          controller: _newBranchController,
-          decoration: const InputDecoration(
-            labelText: '分支名',
-            hintText: 'feature/xxx',
-            border: OutlineInputBorder(),
-          ),
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: _createBranch,
-            child: const Text('创建'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final repo = ref.watch(currentRepoProvider);
-    if (repo == null) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('分支管理')),
-        body: const Center(child: Text('仓库未找到')),
-      );
-    }
-
-    final branches = ref.watch(branchesProvider(repo.localPath));
-
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l = AppLocalizations.of(context);
+    final async = ref.watch(_branchesProvider(repoId));
     return Scaffold(
       appBar: AppBar(
-        title: const Text('分支管理'),
+        title: Text(l.branchCreate),
         actions: [
           IconButton(
             icon: const Icon(Icons.add),
-            onPressed: _showCreateDialog,
-            tooltip: '新建分支',
+            onPressed: () => _showCreateDialog(context, ref),
           ),
         ],
       ),
-      body: branches.when(
+      body: async.when(
         data: (list) {
-          if (list.isEmpty) {
-            return const Center(child: Text('暂无分支'));
-          }
-          return ListView.builder(
-            itemCount: list.length,
-            itemBuilder: (_, i) {
-              final b = list[i];
-              return ListTile(
-                leading: Icon(
-                  b.isCurrent ? Icons.check_circle : Icons.call_split,
-                  color: b.isCurrent ? Colors.green : null,
-                ),
-                title: Text(b.name),
-                subtitle: Text(
-                  b.type == BranchType.remote ? '远程分支' : '本地分支',
-                  style: const TextStyle(fontSize: 12),
-                ),
-                trailing: b.isCurrent
-                    ? const Chip(label: Text('当前', style: TextStyle(fontSize: 11)))
-                    : PopupMenuButton<String>(
-                        itemBuilder: (_) => [
-                          const PopupMenuItem(value: 'checkout', child: Text('切换')),
-                          const PopupMenuItem(value: 'delete', child: Text('删除')),
-                        ],
-                        onSelected: (v) async {
-                          if (v == 'checkout') {
-                            await _checkoutBranch(b);
-                          } else if (v == 'delete') {
-                            final confirm = await showDialog<bool>(
-                              context: context,
-                              builder: (_) => AlertDialog(
-                                title: const Text('确认删除'),
-                                content: Text('确定删除分支 "${b.name}" 吗？'),
-                                actions: [
-                                  TextButton(
-                                    onPressed: () => Navigator.pop(context, false),
-                                    child: const Text('取消'),
-                                  ),
-                                  TextButton(
-                                    onPressed: () => Navigator.pop(context, true),
-                                    child: const Text('删除', style: TextStyle(color: Colors.red)),
-                                  ),
-                                ],
-                              ),
-                            );
-                            if (confirm == true) {
-                              await _deleteBranch(b);
-                            }
-                          }
-                        },
-                      ),
-              );
-            },
+          final locals = list.where((b) => !b.isRemote).toList();
+          final remotes = list.where((b) => b.isRemote).toList();
+          return RefreshIndicator(
+            onRefresh: () async => ref.invalidate(_branchesProvider(repoId)),
+            child: ListView(
+              children: [
+                if (locals.isNotEmpty) ...[
+                  _section(context, l.branchLocal),
+                  ...locals.map((b) => _BranchTile(repoId: repoId, branch: b)),
+                ],
+                if (remotes.isNotEmpty) ...[
+                  _section(context, l.branchRemote),
+                  ...remotes.map((b) => _BranchTile(repoId: repoId, branch: b)),
+                ],
+                if (locals.isEmpty && remotes.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.all(40),
+                    child: Center(child: Text(l.branchNoBranches)),
+                  ),
+              ],
+            ),
           );
         },
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('加载失败: $e')),
+        error: (e, _) => Center(child: Text('${l.commonError}: $e')),
       ),
     );
+  }
+
+  Widget _section(BuildContext context, String title) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+      child: Text(
+        title.toUpperCase(),
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: Theme.of(context).colorScheme.primary,
+              letterSpacing: 1.2,
+            ),
+      ),
+    );
+  }
+
+  Future<void> _showCreateDialog(BuildContext context, WidgetRef ref) async {
+    final ctrl = TextEditingController();
+    final l = AppLocalizations.of(context);
+    final from = await showDialog<String?>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: Text(l.branchCreate),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: InputDecoration(
+            labelText: l.branchName,
+            hintText: 'feature/awesome',
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, null), child: Text(l.commonCancel)),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, ctrl.text.trim()),
+            child: Text(l.commonConfirm),
+          ),
+        ],
+      ),
+    );
+    if (from != null && from.isNotEmpty) {
+      final repo = await ref.read(appConfigRepoProvider).load();
+      final r = repo.repositories.firstWhere((e) => e.id == repoId);
+      try {
+        await ref.read(createBranchProvider).call(r.localPath, from);
+        ref.invalidate(_branchesProvider(repoId));
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+        }
+      }
+    }
+  }
+}
+
+class _BranchTile extends ConsumerWidget {
+  final String repoId;
+  final Branch branch;
+  const _BranchTile({required this.repoId, required this.branch});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l = AppLocalizations.of(context);
+    final color = branch.isCurrent
+        ? Theme.of(context).colorScheme.primary
+        : Theme.of(context).colorScheme.onSurface;
+    return ListTile(
+      leading: Icon(
+        branch.isCurrent ? Icons.check_circle : (branch.isRemote ? Icons.cloud_outlined : Icons.account_tree_outlined),
+        color: color,
+      ),
+      title: Text(branch.name, style: TextStyle(color: color, fontWeight: branch.isCurrent ? FontWeight.w600 : null)),
+      subtitle: branch.upstream != null
+          ? Text('-> ${branch.upstream}', style: Theme.of(context).textTheme.bodySmall)
+          : null,
+      trailing: branch.isCurrent
+          ? null
+          : PopupMenuButton<String>(
+              onSelected: (v) => _onSelected(context, ref, v),
+              itemBuilder: (_) => [
+                PopupMenuItem(value: 'checkout', child: Text(l.branchCheckout)),
+                if (!branch.isRemote)
+                  PopupMenuItem(value: 'delete', child: Text(l.branchDelete)),
+              ],
+            ),
+      onTap: branch.isCurrent ? null : () => _checkout(context, ref),
+    );
+  }
+
+  Future<void> _checkout(BuildContext context, WidgetRef ref) async {
+    final repo = await ref.read(appConfigRepoProvider).load();
+    final r = repo.repositories.firstWhere((e) => e.id == repoId);
+    try {
+      await ref.read(checkoutBranchProvider).call(r.localPath, branch.name);
+      ref.invalidate(_branchesProvider(repoId));
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
+
+  Future<void> _onSelected(BuildContext context, WidgetRef ref, String action) async {
+    if (action == 'checkout') {
+      await _checkout(context, ref);
+      return;
+    }
+    if (action == 'delete') {
+      final l = AppLocalizations.of(context);
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (_) => AlertDialog(
+          title: Text(l.branchDelete),
+          content: Text('Delete ${branch.name}?'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: Text(l.commonCancel)),
+            FilledButton(onPressed: () => Navigator.pop(context, true), child: Text(l.commonDelete)),
+          ],
+        ),
+      );
+      if (confirm == true) {
+        final repo = await ref.read(appConfigRepoProvider).load();
+        final r = repo.repositories.firstWhere((e) => e.id == repoId);
+        try {
+          await ref.read(deleteBranchProvider).call(r.localPath, branch.name);
+          ref.invalidate(_branchesProvider(repoId));
+        } catch (e) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
+          }
+        }
+      }
+    }
   }
 }
